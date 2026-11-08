@@ -16,15 +16,36 @@ replacement.
 ## Download
 
 Get the latest version from [Releases](https://github.com/carlosalbornoz/graid-utility/releases).
-Unzip `G-RAID-Utility-<version>.zip`, move the app to Applications, and open it.
+Unzip `G-RAID-Utility-<version>.zip`, move the app to Applications, and open it. A setup
+checklist then walks you through Full Disk Access and connecting the G-RAID.
 
-**The first time, macOS blocks it.** The app isn't notarized by Apple, so macOS says it can't
-verify it. Click **Done**, open System Settings → Privacy & Security, scroll down to
-Security, and click **Open Anyway** next to "G-RAID Utility". Confirm with your password.
+> [!IMPORTANT]
+> **The first time, macOS will refuse to open G-RAID Utility. That's expected, and the app is
+> fine.** macOS only opens downloaded apps without asking when the developer pays Apple for a
+> Developer ID ($99 a year) and sends every build to Apple to be checked ("notarized"). This is a
+> free, open-source project, so it isn't notarized. All the code is here to read, and you can
+> build the app yourself instead (see [graidctl/README.md](graidctl/README.md)).
+
+**If macOS says "Apple could not verify G-RAID Utility is free of malware":**
+
+1. Click **Done** (not Move to Trash).
+2. Open System Settings → Privacy & Security, scroll down to **Security**, and click
+   **Open Anyway** next to "G-RAID Utility".
+3. Confirm with your password or Touch ID, then click **Open**.
+
 You only need to do this once per version.
 
-Then turn on **Full Disk Access** for G-RAID Utility in System Settings → Privacy & Security →
-Full Disk Access. macOS doesn't allow raw disk reads without it, even for administrators.
+**If macOS says "G-RAID Utility is damaged and can't be opened":** the app isn't broken. This
+message means its signature didn't survive the download, which some browsers, archive tools and
+cloud-synced folders cause. Delete it, download the zip again, and unzip it by double-clicking it
+in Finder. If it still says damaged, run this in Terminal, then open the app again:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/G-RAID Utility.app"
+```
+
+That removes the "downloaded from the internet" flag, so macOS stops checking the app. Only do it
+for a copy you got from this page.
 
 ## Status
 
@@ -34,9 +55,10 @@ Verified on that unit:
 - Status, monitoring, eject, speed test, drive sleep and the health report
 - Changing the RAID mode (RAID 0 → RAID 1): exact new size, reconnects by itself in seconds
 - Detecting a pulled drive in RAID 1: Degraded status, notification, volume stays readable
-- The manual rebuild command (`graidctl rebuild`): accepted and copying
+- A manual rebuild (`graidctl rebuild`) run to completion: 4 TB in about 9 hours, with live
+  progress, and every test file intact afterwards
 
-Not yet verified: a rebuild running to completion, Individual (JBOD) mode, SPAN.
+Not yet verified: Individual (JBOD) mode, SPAN, and a power cut during a rebuild.
 See [graidctl/TESTING.md](graidctl/TESTING.md) for every result.
 
 **Back up before you use it.** Changing the RAID mode erases both drives, and a rebuild erases

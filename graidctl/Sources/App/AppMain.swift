@@ -62,6 +62,7 @@ struct GRAIDUtilityApp: App {
             }
             HistoryCommand()
             UpdateCommands()
+            SetupCommands()
         }
 
         Window("Event History", id: "history") {
@@ -95,13 +96,25 @@ struct HistoryCommand: Commands {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         Pref.register()
+        SetupState.skipForExistingUsers()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Handle the Quit Apple event ourselves so we can see who sent it (SwiftUI doesn't pass
+        // applicationShouldTerminate on, and by willTerminate the event is gone). ⌘Q and the
+        // Quit menu item don't come through here.
+        NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleQuit(_:reply:)),
+                                                     forEventClass: AEEventClass(kCoreEventClass), andEventID: AEEventID(kAEQuitApplication))
         Task { @MainActor in
+            SetupState.shared.start()
             AppModel.shared.start()
             UpdateChecker.shared.start()
         }
+    }
+
+    @objc func handleQuit(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
+        if SetupState.quitCameFromSystemSettings(event) { SetupState.openAgainAfterExit() }
+        NSApp.terminate(nil)
     }
 
     /// With background monitoring on, closing the window keeps the app running in the menu bar.

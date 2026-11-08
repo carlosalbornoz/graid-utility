@@ -136,12 +136,17 @@ struct StatusDot: View {
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var updates = UpdateChecker.shared
+    @ObservedObject var setup = SetupState.shared
+    @AppStorage(Pref.setupDone) private var setupDone = false
 
     var body: some View {
         VStack(spacing: 0) {
             // Device messages come first: they're about what just happened.
             if let release = updates.available, model.message == nil {
                 UpdateBar(release: release)
+                Divider()
+            } else if setupDone, model.message == nil, OldConfiguratorBar.shouldShow {
+                OldConfiguratorBar()
                 Divider()
             }
             if let notice = model.message {
@@ -151,7 +156,12 @@ struct ContentView: View {
                 Divider()
             }
             Group {
+                if !setupDone {
+                    SetupView()
+                } else {
                 switch model.phase {
+                case .needsFullDiskAccess:
+                    FullDiskAccessView()
                 case .scanning:
                     ProgressView("Looking for a G-RAID…").frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .noDevice:
@@ -165,8 +175,9 @@ struct ContentView: View {
                 case .ejected:
                     EjectedView()
                 }
+                }
             }
-            .frame(height: model.phase == .ready ? 500 : 440)
+            .frame(height: setupDone && model.phase == .ready ? 500 : 440)
         }
         .frame(width: 940)   // fixed: the window always fits the content
         // No window-wide tint: standard buttons keep macOS's own high-contrast styling. Blue is
@@ -197,7 +208,8 @@ struct ContentView: View {
             if let t = model.lastUpdated { s += " · Updated " + t.formatted(date: .omitted, time: .shortened) }
             return s
         case .scanning: return "Looking for a G-RAID…"
-        case .needsAccess: return model.waitingForUnlockService ? "G-RAID found · Unlocking…" : "G-RAID found · Waiting for access"
+        case .needsFullDiskAccess: return "G-RAID found · Needs Full Disk Access"
+        case .needsAccess: return model.waitingForUnlockService ? "G-RAID found · Unlocking…" : model.wakingDrives ? "G-RAID found · Waking the drives…" : "G-RAID found · Waiting for access"
         case .noDevice: return model.usbGRAIDs.isEmpty ? "No G-RAID detected · Waiting for connection…" : "G-RAID connected over USB"
         case .startingUp: return model.startingUpTooLong ? "G-RAID found · Disk hasn't appeared" : "G-RAID found · Starting up…"
         case .ejected: return "Ejected · Safe to unplug"

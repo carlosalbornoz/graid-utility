@@ -175,7 +175,7 @@ struct MenuBarIcon: View {
         case (.ready, .good?): Image(systemName: "externaldrive.badge.checkmark")
         case (.ready, .attention?): Image(systemName: "externaldrive.badge.exclamationmark")
         case (.ready, .bad?): Image(systemName: "externaldrive.badge.xmark")
-        case (.needsAccess, _), (.startingUp, _): Image(systemName: "externaldrive.badge.questionmark")
+        case (.needsAccess, _), (.needsFullDiskAccess, _), (.startingUp, _): Image(systemName: "externaldrive.badge.questionmark")
         case (.ejected, _): Image(systemName: "eject")
         default: Image(systemName: "externaldrive")
         }
@@ -199,6 +199,7 @@ struct MenuBarContent: View {
                 Text("Idle, letting the drives sleep · last checked \(idle.formatted(date: .omitted, time: .shortened))")
             }
         case .needsAccess: Text("G-RAID connected: open the app to allow access")
+        case .needsFullDiskAccess: Text("G-RAID connected: open the app to allow Full Disk Access")
         case .noDevice: Text(model.usbGRAIDs.isEmpty ? "No G-RAID connected" : "G-RAID connected over USB")
         case .scanning: Text("Checking…")
         case .startingUp: Text("G-RAID connected: starting up…")

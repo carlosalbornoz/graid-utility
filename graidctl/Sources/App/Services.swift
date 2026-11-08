@@ -18,6 +18,8 @@ enum Pref {
     static let prereleases = "includePrereleases"
     static let lastUpdateCheck = "lastUpdateCheck"
     static let skippedReleaseKey = "skippedRelease"
+    static let setupDone = "setupDone"
+    static let keepOldConfigurator = "keepOldConfigurator"
 
     static func register() {
         UserDefaults.standard.register(defaults: [

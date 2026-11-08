@@ -134,7 +134,7 @@ struct MountedVolume {
 
 @MainActor
 final class AppModel: ObservableObject {
-    enum Phase: Equatable { case scanning, noDevice, needsAccess, ready, startingUp, ejected }
+    enum Phase: Equatable { case scanning, noDevice, needsAccess, needsFullDiskAccess, ready, startingUp, ejected }
 
     static let shared = AppModel()
 
@@ -144,6 +144,9 @@ final class AppModel: ObservableObject {
     @Published var lockedDisks: [String] = []   // external SATA disks we can't read yet
     @Published var message: Notice?
     @Published var isWorking = false
+    /// Access was just granted and the first read is under way. Drives that were asleep take
+    /// about 14 s each to spin up (one after the other), so this can last ~30 s.
+    @Published var wakingDrives = false
     @Published var lastUpdated: Date?
     /// Feedback for a refresh the user asked for (the toolbar button or ⌘R).
     enum UserRefresh { case idle, running, done }
@@ -163,6 +166,8 @@ final class AppModel: ObservableObject {
     private var ejectedVolumes: [String] = []
     /// True while Mount Again is running (shown on its button).
     @Published var mounting = false
+    /// Set when Mount Again succeeds; the first status read that starts after it ends `mounting`.
+    private var awaitingReadAfterMount = false
     /// The section shown on the right of the main window.
     @Published var tab: MainTab = .array
     /// Whether the Volumes tab lists system partitions (EFI and so on).
@@ -266,7 +271,7 @@ final class AppModel: ObservableObject {
     }
 
     /// Turn the difference between two scans into events, log them and notify.
-    private func record(scan: (units: [Unit], locked: [String], usb: [Candidate], present: Set<String>, thunderbolt: [String])) {
+    private func record(scan: (units: [Unit], locked: [String], blocked: [String], usb: [Candidate], present: Set<String>, thunderbolt: [String])) {
         let names = Self.names(scan.units)
         let now = Dictionary(uniqueKeysWithValues: scan.units.map { ($0.id, $0.snapshot(named: names[$0.id] ?? $0.baseName)) })
         guard let old = lastSnapshots else { lastSnapshots = now; return }   // first scan is the baseline
@@ -483,11 +488,15 @@ final class AppModel: ObservableObject {
         scanning = true
         if !quiet && units.isEmpty { phase = .scanning }
         let skip = ejectedDisks
+        let firstReadAfterAccess = wakingDrives
+        let firstReadAfterMount = awaitingReadAfterMount
         Task.detached(priority: .userInitiated) {
             let result = Self.scan(skipping: skip)
             let counters = ioCounters(bsdNames: result.units.flatMap(\.bsdNames))
             await MainActor.run {
                 self.scanning = false
+                if firstReadAfterAccess { self.wakingDrives = false }
+                if firstReadAfterMount { self.awaitingReadAfterMount = false; self.mounting = false }
                 self.countersAfterCheck = result.units.isEmpty ? nil : counters
                 self.idleSince = nil
                 defer { if self.rescanPending { self.rescanPending = false; self.refresh(quiet: true) } }
@@ -508,12 +517,17 @@ final class AppModel: ObservableObject {
                 let remounted = self.ejectedDisks.subtracting(stillEjected).filter(result.present.contains)
                 if !remounted.isEmpty { self.scheduleRefresh(after: 0.5) }   // mounted again elsewhere: read it next pass
                 self.ejectedDisks = stillEjected
+                // Without Full Disk Access the disk reads fail even once the password is given,
+                // so ask for that first.
+                let noFullDiskAccess = !result.blocked.isEmpty || (!result.locked.isEmpty && !SetupState.hasFullDiskAccess())
                 if !result.units.isEmpty { self.phase = .ready }
+                else if noFullDiskAccess { self.phase = .needsFullDiskAccess }
                 else if !result.locked.isEmpty { self.phase = .needsAccess }
-                else if !self.ejectedDisks.isEmpty { self.phase = .ejected }
+                else if !self.ejectedDisks.isEmpty || self.mounting { self.phase = .ejected }
                 else if !result.usb.isEmpty { self.phase = .noDevice }
                 else if !result.thunderbolt.isEmpty { self.phase = .startingUp }
                 else { self.phase = .noDevice }
+                if self.phase == .needsFullDiskAccess { self.scheduleRefresh(after: 2) }
                 if self.phase == .startingUp {
                     if self.startingSince == nil { self.startingSince = Date() }
                     self.scheduleRefresh(after: 2)
@@ -535,17 +549,25 @@ final class AppModel: ObservableObject {
         }
     }
 
-    nonisolated static func scan(skipping ejected: Set<String> = []) -> (units: [Unit], locked: [String], usb: [Candidate], present: Set<String>, thunderbolt: [String]) {
+    nonisolated static func scan(skipping ejected: Set<String> = []) -> (units: [Unit], locked: [String], blocked: [String], usb: [Candidate], present: Set<String>, thunderbolt: [String]) {
         var units: [String: Unit] = [:]
         var order: [String] = []
         var locked: [String] = []
+        var blocked: [String] = []   // readable by permissions, but macOS wants Full Disk Access
         let all = wholeDisks()
         let usb = all.filter { !$0.isInternal && $0.proto == "USB" && ($0.model + " " + $0.mediaName).localizedCaseInsensitiveContains("G-RAID") }
         for c in candidateDisks() where !ejected.contains(c.bsdName) {
             guard access(c.rawPath, R_OK) == 0 else { locked.append(c.bsdName); continue }
-            guard let dev = try? Device(path: c.rawPath),
-                  let (st, _) = try? dev.execute(.identify), st == 0x00 || st == 0x20,
-                  let (caps, raid, disks) = try? fetchAll(dev) else { continue }
+            let dev: Device
+            let st: UInt8
+            do {
+                dev = try Device(path: c.rawPath)
+                st = try dev.execute(.identify).0
+            } catch {
+                if "\(error)".contains("Full Disk Access") { blocked.append(c.bsdName) }
+                continue
+            }
+            guard st == 0x00 || st == 0x20, let (caps, raid, disks) = try? fetchAll(dev) else { continue }
             saveDiagnostics(bsd: c.bsdName, caps: caps, raid: raid, disks: disks, acks: dev.lastAcks)
             if let existing = units[caps.uniqueID] {
                 var merged = Unit(path: existing.path, bsdNames: existing.bsdNames + [c.bsdName],
@@ -567,7 +589,7 @@ final class AppModel: ObservableObject {
                 units[caps.uniqueID] = unit
             }
         }
-        return (order.compactMap { units[$0] }, locked, usb, Set(all.map(\.bsdName)), graidsOnThunderbolt())
+        return (order.compactMap { units[$0] }, locked, blocked, usb, Set(all.map(\.bsdName)), graidsOnThunderbolt())
     }
 
     /// Raw reply bytes from the last refresh, for troubleshooting without disk access.
@@ -606,9 +628,11 @@ final class AppModel: ObservableObject {
             p.standardError = err
             p.standardOutput = FileHandle.nullDevice
             var failure: String?
+            var granted = false
             do {
                 try p.run()
                 p.waitUntilExit()
+                granted = p.terminationStatus == 0
                 if p.terminationStatus != 0 {
                     let text = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
                     failure = text.contains("-128") ? nil : text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -617,8 +641,10 @@ final class AppModel: ObservableObject {
                 failure = "\(error)"
             }
             let reported = failure
+            let ok = granted
             await MainActor.run {
                 self.isWorking = false
+                self.wakingDrives = ok
                 if let f = reported { self.message = Notice(.problem, "Access wasn't granted", f) }
                 self.refresh()
             }
@@ -732,8 +758,15 @@ final class AppModel: ObservableObject {
             ejectedVolumes = []
             ejectedDisks = []
             isWorking = false
-            mounting = false
-            if let f = failure { message = Notice(.problem, "The G-RAID couldn't be mounted", f) }
+            if let f = failure {
+                mounting = false
+                message = Notice(.problem, "The G-RAID couldn't be mounted", f)
+            } else {
+                // The mount is done, but the screen changes only after the next status read,
+                // which waits for the drives to spin up (one after the other, ~14 s each).
+                // Keep "Mounting…" up until that read comes back.
+                awaitingReadAfterMount = true
+            }
             scheduleRefresh(after: 1)
         }
     }

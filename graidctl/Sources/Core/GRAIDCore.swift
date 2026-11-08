@@ -762,6 +762,11 @@ func selfTest() -> Bool {
     check("releases: summary skips headings and strips Markdown",
           releaseSummary(rels[0].notes) == "Back up first. Adds update checks and graidctl rebuild.")
     check("releases: summary cut at a word", releaseSummary(String(repeating: "word ", count: 60), limit: 20) == "word word word word…")
+
+    // Setup
+    check("places: one, two, duplicates", placesText(["Downloads"]) == "in Downloads"
+          && placesText(["Downloads", "Applications", "Downloads"]) == "in Downloads and Applications")
+    check("places: many and none", placesText(["a", "b", "c"]) == "in 3 places" && placesText([]) == "")
     return ok
 }
 

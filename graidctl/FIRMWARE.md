@@ -405,6 +405,21 @@ One snapshot only: needs a second one with both drives as members to confirm.
 value at 0x04B4. Same layout as the end value (two big-endian dwords, low first). Bay 2's record
 **+0x16 went 00 → 01** on becoming a member again; +0x17 stayed ff.
 
+**After the rebuild, both drives in sync (2026-11-09 00:51):** volume Online, 0x04BF = 01,
+0x0629 = 00, 0x060A = 00, 0x04AC–0x04B3 back to 0, end value unchanged. Port records:
+
+| Byte | Bay 2 set aside (15:10) | During the copy (15:16) | In sync (00:51) |
+|---|---|---|---|
+| +0x16 | Bay 1 01 / Bay 2 **00** | 01 / **01** | 01 / **01** |
+| +0x4E | Bay 1 **01** / Bay 2 02 | 01 / 02 | **02** / 02 |
+| +0x17 | 6e / ff | 6e / ff | 6e / ff |
+| +0x56 | 00 / 01 | 00 / 01 | 00 / 01 |
+
+**+0x16 = "member of the set"** holds in all three states (correlation, not yet a traced write).
+**+0x4E** lined up after the copy: a candidate per-drive generation number, worth logging through
+the stale-drive repeat, since a generation number is exactly what would decide which drive wins.
++0x17 and +0x56 didn't change with membership or order.
+
 So the rollback's mechanism is **unexplained** again: where this firmware keeps "which port is the
 member" (the order byte 0xFF in the reply) is still to be found. Next: dump both port records
 (0x0000–0x0183) to find the field behind order/status, then log it through a repeat of the test.

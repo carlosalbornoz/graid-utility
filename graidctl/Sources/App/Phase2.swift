@@ -485,8 +485,10 @@ struct EjectedView: View {
         VStack(spacing: 14) {
             asset("Img_Device_GRAID").resizable().scaledToFit().frame(height: 120).opacity(0.6)
             Image(systemName: "eject.circle.fill").font(.title).foregroundStyle(.secondary)
-            Text("Ejected · safe to unplug").font(.title3.weight(.semibold))
-            Text("The utility stops checking the G-RAID while it's ejected.")
+            // While mounting, don't say "safe to unplug": the drives are waking up.
+            Text(model.mounting ? "Mounting the G-RAID…" : "Ejected · safe to unplug").font(.title3.weight(.semibold))
+            Text(model.mounting ? "Waking the drives. This can take about 30 seconds."
+                                : "The utility stops checking the G-RAID while it's ejected.")
                 .foregroundStyle(.secondary)
             Button { model.mountAgain() } label: {
                 if model.mounting {
@@ -496,7 +498,7 @@ struct EjectedView: View {
                 }
             }
             .controlSize(.large)
-            .disabled(model.isWorking)
+            .disabled(model.isWorking || model.mounting)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

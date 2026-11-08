@@ -7,8 +7,8 @@ the same way the original app does: by reading specific sectors in a specific or
 (see [PROTOCOL.md](PROTOCOL.md)).
 
 > **Status:** verified on a real G-RAID with Thunderbolt (2 × HGST 4 TB, macOS 27): status
-> reading, a RAID 0 → RAID 1 mode change, degraded detection and the manual rebuild command.
-> A rebuild running to completion is not yet verified. Back up first; see
+> reading, a RAID 0 → RAID 1 mode change, degraded detection, and a manual rebuild run to
+> completion (4 TB in about 9 hours, every test file intact). Back up first; see
 > [TESTING.md](TESTING.md) and the warning about reinserting pulled drives in the
 > [top-level README](../README.md#status).
 
@@ -33,7 +33,7 @@ A downloaded release isn't notarized, so the first time you open it macOS blocks
 click **Open Anyway** in System Settings → Privacy & Security (see
 [Download](../README.md#download)). An app you build yourself opens without this.
 
-Copy `build/G-RAID Utility.app` to `/Applications` and open it. Status and warning icons are
+Copy `build/G-RAID Utility.app` to `/Applications` and open it. The first time, a setup checklist walks through Full Disk Access, connecting the G-RAID and background monitoring, and offers to move the old G-Technology Configurator to the Trash if it finds it (running both apps at once can mix up commands to the controller). **G-RAID Utility → Show Setup…** brings it back. Status and warning icons are
 system symbols. The enclosure picture and app icon are G-Technology's, added locally with
 `tools/fetch-artwork.sh` (see [Resources/README.md](Resources/README.md)).
 

@@ -103,6 +103,10 @@ func customUnit(mode: UInt8, volumeStatus: UInt8 = 0, volumeBlocks: UInt64, tag:
 struct RenderPreviews {
     @MainActor static func main() {
         _ = NSApplication.shared
+        // Every render below is past first-run setup unless it says otherwise.
+        UserDefaults.standard.set(true, forKey: Pref.setupDone)
+        UserDefaults.standard.set(false, forKey: Pref.keepOldConfigurator)
+        UserDefaults.standard.set(false, forKey: Pref.monitorEnabled)
         let ready = AppModel(); ready.units = [sampleUnit(rebuilding: true)]; ready.phase = .ready
         render("ready-rebuilding", ready)
         let ok = AppModel(); ok.units = [sampleUnit(rebuilding: false)]; ok.phase = .ready
@@ -164,6 +168,41 @@ struct RenderPreviews {
         render("needs-access", locked)
         let none = AppModel(); none.phase = .noDevice
         render("no-device", none)
+
+        // First-run setup and the Full Disk Access / old Configurator states.
+        let setup = SetupState.shared
+        setup.checksSystem = false
+        let oldCopy = URL(fileURLWithPath: NSHomeDirectory() + "/Downloads/G-RAID with Thunderbolt Configurator.app")
+        UserDefaults.standard.set(false, forKey: Pref.setupDone)
+        setup.fullDiskAccess = false; setup.oldCopies = [oldCopy]
+        let first = AppModel(); first.phase = .needsFullDiskAccess; first.thunderboltGRAIDs = ["G-RAID with Thunderbolt"]
+        render("setup-first-run", first)
+        setup.fullDiskAccess = true; setup.oldCopies = []; setup.oldTrashed = true
+        let mid = AppModel(); mid.lockedDisks = ["disk4"]; mid.phase = .needsAccess
+        render("setup-allow-access", mid)
+        mid.wakingDrives = true
+        render("setup-waking-drives", mid)
+        let wakeMain = AppModel(); wakeMain.lockedDisks = ["disk4"]; wakeMain.phase = .needsAccess; wakeMain.wakingDrives = true
+        UserDefaults.standard.set(true, forKey: Pref.setupDone)
+        render("needs-access-waking", wakeMain)
+        UserDefaults.standard.set(false, forKey: Pref.setupDone)
+        setup.oldTrashed = false
+        UserDefaults.standard.set(true, forKey: Pref.monitorEnabled)
+        let fin = AppModel(); fin.units = [sampleUnit(rebuilding: false)]; fin.phase = .ready
+        render("setup-done", fin)
+        UserDefaults.standard.set(false, forKey: Pref.monitorEnabled)
+        UserDefaults.standard.set(true, forKey: Pref.setupDone)
+        setup.fullDiskAccess = false
+        let fda = AppModel(); fda.phase = .needsFullDiskAccess
+        render("full-disk-access", fda)
+        setup.fullDiskAccess = true
+        render("full-disk-access-reopen", fda)
+        setup.oldCopies = [oldCopy]
+        let oldBar = AppModel(); oldBar.units = [sampleUnit(rebuilding: false)]; oldBar.phase = .ready
+        render("old-configurator-bar", oldBar)
+        setup.oldRunning = true
+        render("old-configurator-open", oldBar)
+        setup.oldRunning = false; setup.oldCopies = []
         var u = sampleUnit(rebuilding: false)
         u.partitions = [
             Partition(bsd: "disk4s1", physicalDisk: "disk4", parentDisk: "disk4", name: "EFI", size: 209.7e6, format: "MS-DOS (FAT32)",
@@ -196,6 +235,8 @@ struct RenderPreviews {
         render("starting-up", starting)
         let ejected = AppModel(); ejected.phase = .ejected
         render("ejected", ejected)
+        ejected.mounting = true
+        render("ejected-mounting", ejected)
         func trace(_ base: Double, upTo end: Double, wobble: Double) -> [SpeedSample] {
             stride(from: 0.02, through: end, by: 0.02).map { x in SpeedSample(at: x, mbps: base + wobble * sin(x * 37) + (x > 0.8 ? -40 * (x - 0.8) * 5 : 0)) }
         }

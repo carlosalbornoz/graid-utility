@@ -92,10 +92,19 @@ struct AccessView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 460)
-            Button("Allow Access…") { model.requestAccess() }
-                .controlSize(.large)
-                .keyboardShortcut(.defaultAction)
-                .disabled(model.isWorking)
+            if model.isWorking || model.wakingDrives {
+                // The first read after the password wakes the drives: ~30 s with nothing else to show.
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(model.isWorking ? "Waiting for your password…" : "Access allowed. Waking the drives… this can take about 30 seconds.")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(height: 32)
+            } else {
+                Button("Allow Access…") { model.requestAccess() }
+                    .controlSize(.large)
+                    .keyboardShortcut(.defaultAction)
+            }
             Text("Found: \(model.lockedDisks.joined(separator: ", "))").font(.caption).foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

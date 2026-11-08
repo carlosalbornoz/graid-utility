@@ -149,6 +149,24 @@ that was out while the volume was in use.
   Still to do when the copy ends (~22:00): re-check the 42 test files, and a one-off
   `watch-ram --ports` snapshot with both drives in sync (app quit for a minute) to settle +0x16.
 
+### Result 2026-11-09 00:18: the rebuild ran to completion
+
+- **Finished 00:18:06**, about **9 h 5 min** after it started (~15:13): the app logged
+  "Rebuild finished" and "Disk 2: Rebuilding → Online" at that moment. Average about 440 GB/h
+  (~120 MB/s over the whole disk; ~163 MB/s near the start, slower toward the inner tracks).
+- Status afterwards (the app's own read, 00:43): **RAID 1, volume Online, Bay 1 Online
+  (PK1334PEHT4U9S), Bay 2 Online (PK1334PEHNVSSS)**, size unchanged at 7,813,922,816 sectors.
+- **All 42 test files match their NAS hashes** (00:46, cache bypassed, 144 s). The file edited in
+  place while degraded holds its **original** content: the edit was lost in the rollback, and the
+  rebuild then copied the drive the controller had switched to, faithfully.
+- In-sync RAM snapshot (00:51, app quit): 0x04BF in_sync **01**, 0x0629 **00**, rebuild mask
+  0x060A **00**, rebuild position 0x04AC back to **0**, 0x0499 **02**. Port records: **+0x16 = 01 on
+  both bays** (it was 00 on Bay 2 while set aside, 01 during the copy), so +0x16 tracks "member of
+  the set" across all three states. **+0x4E = 02 on both** (it was 01 on Bay 1 / 02 on Bay 2 while
+  Bay 2 was set aside): a new candidate, possibly a per-drive generation number. +0x17 stays ff on
+  Bay 2 even though its order now reads 01, so +0x17 is not the order byte.
+- **Not yet tested:** what happens if the power is cut mid-rebuild (does it resume?).
+
 ## Next: the stale-drive repeat, with evidence (planned)
 
 Goals: (1) find where the controller records "written while degraded", (2) see what makes it swap
