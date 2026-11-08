@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+._*
+
+# Build output and renders
+graidctl/build/
+
+# Local tool settings (contain this machine's paths)
+.claude/
+graidctl/.codex/
+graidctl/.gemini/
+
+# G-Technology / Western Digital files: not ours to publish
+G-RAID with Thunderbolt Configurator.app/
+G-Technology _Icons/
+*.icns
+graidctl/Resources/*.png
+
+# Firmware: the dump and everything derived from it (dump your own with `graidctl firmware-dump`)
+firmware/*.bin
+firmware/fw.asm
+firmware/switches.txt
+firmware/scratch/rea_decomp/
+firmware/scratch/rea_ghidra/
+firmware/scratch/ghidra/
+__pycache__/

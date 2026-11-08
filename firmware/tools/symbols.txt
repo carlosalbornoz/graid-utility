@@ -1,0 +1,172 @@
+# Known names for the G-RAID ASM1092R firmware 140827300211.
+# Format: <kind> <hex address> <name> [; note]
+# kind: code = 8051 code address (file offset - 0xB0); x = XDATA address.
+# Add to this file as you learn more; tools/show.py substitutes these names.
+
+# Keil C51 runtime
+code 0329 C_ULCMP        ; compare R0-R3 with R4-R7 (unsigned long), result in C/Z
+code 031B C_LNEG
+code 033A C_ULSHR        ; shift R4-R7 right by R0
+code 034D C_LSHL         ; shift R4-R7 left by R0
+code 0360 C_LSTXDATA     ; store R4-R7 to @DPTR
+code 036C C_LSTKXDATA    ; store the 4 inline bytes after the call to @DPTR
+code 039D C_CCASE        ; switch: table [addr16, value8]... 0000 default16 follows the call
+code 0F97 C_LLDXDATA     ; load R4-R7 from @DPTR
+code 00E6 C_COPY         ; block copy helper (used by opcode 0x21 handler)
+
+# Vectors
+code 0000 RESET          ; LJMP 064C
+code 064C START
+code 3031 INT0_ISR
+code 1D15 INT1_ISR
+
+# Host command protocol
+code D56C CMD_DISPATCH   ; switch on X:4E6C opcode
+code D6A1 CMD_10_IDENTIFY
+code DA14 CMD_11_CAPABILITIES
+code DBD2 CMD_15_RAID_STATUS
+code DDAD CMD_17_DISK_STATUS
+code D5A6 CMD_2X_FLASH   ; 0x20 read, 0x23 erase, 0x25 write
+code E025 CMD_21_UNKNOWN ; returns 3 bytes from X:07BF (JEDEC ID?)
+code D6B4 CMD_5X_REG     ; 0x50 get, 0x51 SET (arbitrary XDATA write)
+code D8D7 CMD_60_UNKNOWN ; starts per-port operation
+code D950 CMD_61_UNKNOWN ; per-port results of 0x60
+code D8BB CMD_A0_UNKNOWN
+code D739 CMD_B0_MODECHANGE
+code D8A2 CMD_C1_UNKNOWN
+code D72E CMD_F0_RESET
+code D8C6 CMD_F9_UNKNOWN
+code D434 SCHEDULE_DEFERRED_ACTION ; called by A0, B0, F0 after setting a flag
+code E041 CMD_DONE
+
+# RAID
+code A84E RAID_CREATE    ; R5 = internal level (0, 1, 6, 0xFD), R3 = flag from E5F0
+code D830 MODE_TO_LEVEL  ; mode 0->FD, 1->00, 2->01, 3->06
+code AC07 SPAN_MEMBER_LOOP
+code A83F STORE_ARRAY_SIZE ; X:0502
+code 1F63 MODECHANGE_PATH_SELECT ; nonzero -> D830 path, zero -> metadata block at X:5220
+
+# Array size computation (Q1, confirmed by emulation vs captured unit)
+code 9FBE COMPUTE_ARRAY_SIZE ; R7=level (0/1/6), R3:R2:R1 = generic ptr to member list (X:0x0A28)
+code A338 RAID0_SIZE_PATH   ; loop A348-A403 / A405-A5FF (2 unrolled bodies), rounding A456-A4C7
+code 9FF2 RAID1_SIZE_PATH   ; sub-switch on X:06A4 bit2 (40-bit size support)
+code A651 SPAN_SIZE_PATH    ; 40-bit byte-accumulate loop A661-A6FA
+code A4C7 MEMBER_ROUND_TAIL ; serialize rounded size to bytes 0x06AF-0x06B2, then stripe switch A4E4+
+code 0EFB LOAD_PORT_SIZE    ; R4-R7 = long@port[idx]+9 then >>8; helpers 0F1E/0F23/0F3A read +5..+C
+code 5EB4 FLASH_READ_CONFIG_5EB4 ; reads SPI flash config block (0x5DD9 family)
+code 5DD9 CONFIG_BUILD_WRITE ; rebuilds flash config image AND regenerates UniqueID (reads HW 0xF570 twice)
+code 5F98 CONFIG_ID_REFRESH ; copies image+0x21..0x28 (8 bytes) to X:0A85; invalid -> 5DD9 (new ID)
+code 5675 FLASH_ACCESS_5675 ; SPI flash engine step: params at X:0A33 (addr), buffer ptr -> X:0A2D (0x3DE8)
+code 5A74 FLASH_WRITE_5A74  ; SPI flash write step, buffer 0x3DE8
+code 34F0 CONFIG_APPLY      ; applies flash config image to runtime: 0x3EBD.4 -> ALIGN_FLAG etc.
+
+# Rebuild (Q3)
+code B9C5 ATA_SMART_DISPATCH ; [X:0B45]+0x30 selects handler: BA52 read-data passthrough, B9FB status ops, BA68 write log
+code 87EC ATA_FORWARD_BAY1    ; X:09BA (descriptor port) = 0 at 87F6-87FF, then 7F95: forwards IDENTIFY/READ LOG EXT/SMART to bay 1 (2nd review)
+
+# Rebuild internals (Ghidra cross-check pass 2026-11-08)
+code D830 MODE_TO_LEVEL       ; mode X:4E78 -> level; flag = E5F0() -> 2nd arg of RAID_CREATE
+code E5F0 FLAG_FROM_PAYLOAD0A ; returns payload[0x0A] (X:4E7A) ^ 0x80 != 0
+code A84E RAID_CREATE         ; spills R7/R5/R3 to X:0A22/0A23/0A24; flag(0A24) set -> skips 834D
+code 834D MEMBER_PORT_RESET_LOOP ; per-member (state 1/5) port init: 842D clears X:0B27/0B28, X:0B24=0xE0, probe 3E93 via 868B, status 2/0x10 via 82CB, port update 8695/4763; ALIGN_FLAG-dependent 2nd pass
+code 8435 MEMBER_CONFIG_FLASH_WRITE ; builds 0x3DF0+ config image fields, programs SPI-flash HW regs F783/F790 via 87BF, per-drive sync tail (merged with 0x44F8 chain)
+code ACDF REBUILD_SLOT_SHORTCIRCUIT ; returns X:0A24; caller pins slot var=1 and jumps to size write-out
+code E9C4 PORT_INDEX_X_C2     ; X:0A24 (here: Get Disk Status port index) * 0xC2; called only at CE6B/CE7E (2nd review; not a rebuild stride)
+code 44F8 PORT_CTX_SELECT     ; arg = port number into overlaid X:0A24: 1 -> X:EC98=1, 0 -> X:EA98=1 (2nd review)
+code 260C TIMER_START_2000    ; 44F8, then 261E(7,0xD0,1): load 0x07D0 into the timer (2nd review; not a copy engine)
+code 261E TIMER_LOAD          ; 1633 stops timer (F8E0.0, F8F0 flag), sets F8E0 mode bits, X:F8C0:F8C1 = reload value
+code 429B MAINLOOP_PORT_TASK  ; called from main loop 1BDD/1C2E and E9F1; uses 260C timer; purpose unknown
+code CDFC DISK_STATUS_PORT    ; part of Get Disk Status (called from E01A in DDAD handler); X:0A24 = port index
+code 483B ENUM_APPLY_CAPS     ; per-port enumeration: X:06A4=0x74 at 4911, bit2 cleared at 492C if any member fails probe 7746 (X:04F0==1); clamps X:069B to 7/15/31; refreshes X:049B via 4FF0
+code 7746 CAPS_PROBE_7746     ; returns X:04F0 ^ 1 (pass when individual-marker clear)
+code 76E1 LBA_TO_ATA_REGS     ; per-port: X:0540:0544 (+offset) -> ATA LBA regs, X:0B24 = 0xE0 | LBA[27:24]
+
+# Background rebuild and status (second review 2026-11-08)
+code 636A HOTPLUG_ARM_REBUILD ; main loop on insertion (F963 / 1FE1): port status 1 or 5 -> set up pair, call 9165
+code 9165 REBUILD_BEGIN       ; clears X:04BF (in sync) and seeds position at X:04AC; also from BFF6
+code 916A REBUILD_BEGIN_2     ; twin of 9165, from ADD4
+code 8BA9 REBUILD_STEP_DONE   ; compares position with end (X:04AC-04BB); at end sets X:04BF=1 and rewrites config (8435)
+code 1B25 MAIN_LOOP
+code 1F84 TIMER_WAIT          ; load R6:R7 into timer, wait for X:F8F0 bit 0
+code BFDF RESET_DELAY_WAIT    ; TIMER_WAIT(X:0A72:73)
+code 0FAD CHIP_RESET          ; sets reset bits X:F92D.0 / X:F91E.0
+
+# Host command handlers (Q4 emulated)
+code D8D7 CMD_60_PORTOP_START ; consumes params, sets X:0A76-0A7C (52x loop): per-port operation start
+code D950 CMD_61_PORTOP_POLL  ; reply = per-port results, 0xFF = no result yet
+code D8A2 CMD_C1_PORTOP_WAIT  ; param1 = port mask (D33A), sets X:0A71=1, X:0A72:73 = 60, then waits
+code D434 SCHEDULE_DEFERRED_ACTION ; stores cmd P2/P3 into X:0A72:73 (16-bit), clamped to 100
+
+# ATA command handling for the host-visible disk
+code B72D ATA_DISPATCH   ; 0x20/24/30/34 rw, 0xB0 SMART, 0xE0-0xE6 power, 0xEC identify, 0xEF set features
+code 6D98 ATA_PER_DRIVE_A
+code BCFC ATA_PER_DRIVE_B
+
+# XDATA
+x 0000 PORT_STRUCTS      ; 0xC2 bytes per port, index * 0xC2
+x 00A2 PORT0_SIZE_HI     ; port struct +0xA2/+0xA6: capacity (two longs); port 1 at 0x0164/0x0168
+x 0005 PORT_SIZE_FIELDS  ; port+5..+8 = TotalBlocks low dword BE, +9..+C = high dword BE (feeds DiskStatus reply +0x72..)
+x 0016 PORT0_FLAG16      ; selects which port's size Get RAID Status reports
+x 0498 MEMBER_COUNT?
+x 0499 DISK_COUNT?       ; loop bound for COMPUTE_ARRAY_SIZE member loop
+x 049A STRIPE_SIZE_CODE  ; &0x0F: stripe/rounding selector; RAID-status reply StripeSize = code+3 or +7 (DD31-DD55)
+x 049B ALIGN_FLAG        ; loaded from flash config image bit (0x3EBD.4) at 0x353D; clear (this unit): 32 MiB reserve and rounding; set: 8 MiB reserve/rounding, RAID 1 64 MiB
+x 04F0 RAID_LEVEL        ; 0 RAID0, 1 RAID1, 4 SideWinder?, 6 SPAN; 0xFD at X:0B5D = individual
+x 0502 ARRAY_SIZE        ; long (64-bit total, high dword)
+x 0506 ARRAY_SIZE_2      ; long (low dword); ARRAY_SIZE:ARRAY_SIZE_2 = 64-bit volume block count
+x 0540 CMD_LBA_HI        ; 64-bit LBA of the disk command being translated (built from X:0B3B-0B41 at 4C6F); not rebuild state
+x 0544 CMD_LBA_LO        ; low dword of CMD_LBA
+x 054E VOL_REBUILD_FAILED ; when not in sync and 054F clear -> volume status 3
+x 054F VOL_REBUILD_PAUSED ; when not in sync -> volume status 8 (2nd review: not "active")
+x 054D VOL_DEGRADED
+x 0550 VOL_DATA_LOST
+x 0551 VOL_BROKEN
+x 0552 VOL_MIGRATING
+x 0553 VOL_VERIFYING
+x 0554 VOL_VERIFY_FAILED
+x 0555 VOL_VERIFY_PAUSED ; -> volume status 9
+x 04AC REBUILD_POS        ; 64-bit rebuild position/end pairs at 04AC-04BB (compared in 8BA9, saved per member at 9249); readable with GetRegister
+x 04BF VOL_IN_SYNC       ; 1 = in sync (Online/Degraded); 0 = rebuilding (base status 2)
+x 0629 VOL_DEGRADED_BASE ; 2 with VOL_IN_SYNC -> volume status 1
+x 0A20 ACK_STATUS_PTR?
+x 0A22 RAID_CREATE_ARGS  ; 47E4 spill of R7/R5/R3: 0A22=cnt?, 0A23=level, 0A24=flag|port-index|loop-limit (Keil overlay)
+x 0A24 REBUILD_FLAG      ; overlay: RAID_CREATE rebuild flag / Get Disk Status port index (CDFC, E9C4) / port number (44F8) / checksum loop limit (6013)
+x 0A28 MEMBER_LIST       ; member port-index list (0xFF-terminated) passed to COMPUTE_ARRAY_SIZE via generic ptr
+x 0A2D LEVEL_OR_BUFPTR   ; overlay: level byte (size fn) / flash buffer ptr (EA15) - Keil overlay reuse
+x 0A3B MEMBER_LOOP_IDX   ; member loop counter; 0A3D current member port index
+x 0A6F CMD_A0_FLAG
+x 0A70 RESET_PENDING     ; set after ModeChange (D899) and by Reset; background task waits X:0A72:73 then resets (0FAD)
+x 0A71 C1_BUSY           ; CMD_C1 waits at 0xE127-E130 until this clears
+x 0A72 RESET_DELAY       ; 16-bit timer value waited by BFDF/1F84 before the self-reset; cmd P2/P3 clamped to 100, C1 sets 60
+x 0A76 PORTOP_STATE      ; written by CMD_60 (0A76-0A7C)
+x 0A85 UNIQUE_ID         ; 8 bytes, live copy; source: flash config image+0x21 (0x3E09), regenerated only by 0x5DD9
+x 0A8D RAID_SET_NAME     ; 15 bytes live copy of the name from flash config / ModeChange payload 0x5C
+x 0B44 SMART_SUBCMD      ; ATA SMART feature register (case table at 0xB9DA)
+x 0B50 NOT_CONFIGURED    ; nonzero -> reported mode 0x0F
+x 0B5D INDIVIDUAL_FLAG   ; 0xFD = individual mode
+x 0B5F CMD_F9_FLAG       ; set by CMD_F9; disables a fallback in ATA/SMART dispatch (BCE0/B9C5) when X:0B5E set
+x 0A4E RESET_REQUESTED
+x 3DE8 FLASH_CONFIG_BUF  ; 0x200-byte SPI flash config image buffer (flash addr 0xF000/0x1F000)
+x 3DF2 CFG_SIG           ; image+0x0A: 0x10, +0x0B: 0x06 = valid config signature (checked at 0xAD4E)
+x 3E09 CFG_UNIQUE_ID     ; image+0x21..0x28: the 8-byte UniqueID
+x 3EBD CFG_FLAGS_D5      ; image+0xD5: bit4 -> ALIGN_FLAG (applied at 0x353D-0x3542)
+x 5220 META_BLOCK        ; ModeChange staging block: +0=9, +4=disk count, +0x25..=payload[8..32], checksum +0x1E
+x 4E60 CMD_PACKET        ; header
+x 4E68 CMD_CONTROL
+x 4E6C CMD_OPCODE
+x 4E6D CMD_P1
+x 4E6E CMD_P2
+x 4E6F CMD_P3
+x 4E70 CMD_DATA_REPLY    ; 128-byte data block in, reply out
+x 4E78 CMD_DATA_MODE     ; payload[8]: mode byte of the ModeChange payload
+x 4E7A CMD_DATA_FLAG0A   ; payload[0x0A]: 0x80 normal / 0x81 rebuild (E5F0 = byte ^ 0x80)
+x 5220 META_BLOCK        ; built on one ModeChange path, checksum at X:523E
+x 06A4 CAPS_FLAGS_06A4   ; default 0x74 (483B/4911); bit2 = all members passed probe (RAID1 40-bit path); cleared 492C
+x 069B LBA_BITS_CLAMP    ; per-member exponent clamped to 7/15/31 (483B)
+x 06AF SPAN_ACC_40BIT    ; 5-byte 40-bit SPAN size accumulator 06AF-06B3
+x 0A7CC SPAN_MEMBER_TBL  ; per-member rounded size table written by 0xA651 tail
+x 0B24 ATA_CMD_BYTE      ; internal ATA command byte: 0xEx family (834D/842D, 76E1)
+x 0B27 ATA_SUBSTATE      ; with 0B28: cleared by 842D
+x EA98 REBUILD_CTX_A     ; per-member context flags (EA96/EA98 pair; member A)
+x EC98 REBUILD_CTX_B     ; per-member context flags (EC96/EC98 pair; member B)
+x F8C0 TIMER_RELOAD      ; with F8C1; timer control X:F8E0, expiry flag X:F8F0 bit 0 (2nd review; not a RAID engine)
