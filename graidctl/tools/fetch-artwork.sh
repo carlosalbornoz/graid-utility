@@ -24,9 +24,10 @@ if [ -f "$PACK" ]; then
     unzip -q "$PACK" -d "$TMP/pack"
     PACK="$TMP/pack"
 fi
-ICNS=$(find "$PACK" -name 'G-RAIDwithTB_1113.icns' -not -path '*__MACOSX*' | head -n 1)
-[ -n "$ICNS" ] || { echo "G-RAIDwithTB_1113.icns not found in $1" >&2; exit 1; }
-sips -s format png "$ICNS" --out Resources/Img_Device_GRAID.png >/dev/null
+# G-RAID with Thunderbolt, removable drives (the unit this app manages), cropped to the enclosure.
+ICNS=$(find "$PACK" -name 'G-RAID_TB+USB_removable.icns' -not -path '*__MACOSX*' | head -n 1)
+[ -n "$ICNS" ] || { echo "G-RAID_TB+USB_removable.icns not found in $1" >&2; exit 1; }
+swift tools/trim-image.swift "$ICNS" Resources/Img_Device_GRAID.png
 echo "Enclosure picture: Resources/Img_Device_GRAID.png"
 
 # App icon.
