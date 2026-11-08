@@ -24,3 +24,6 @@ firmware/scratch/rea_decomp/
 firmware/scratch/rea_ghidra/
 firmware/scratch/ghidra/
 __pycache__/
+
+# Raw video clips for social posts (large, personal)
+video/
