@@ -13,6 +13,19 @@ replacement.
   disassembler, switch-table lister, a small emulator). The firmware image itself isn't
   included; `graidctl firmware-dump` reads your own unit's (read-only).
 
+## Download
+
+Get the latest version from [Releases](https://github.com/carlosalbornoz/graid-utility/releases).
+Unzip `G-RAID-Utility-<version>.zip`, move the app to Applications, and open it.
+
+**The first time, macOS blocks it.** The app isn't notarized by Apple, so macOS says it can't
+verify it. Click **Done**, open System Settings → Privacy & Security, scroll down to
+Security, and click **Open Anyway** next to "G-RAID Utility". Confirm with your password.
+You only need to do this once per version.
+
+Then turn on **Full Disk Access** for G-RAID Utility in System Settings → Privacy & Security →
+Full Disk Access. macOS doesn't allow raw disk reads without it, even for administrators.
+
 ## Status
 
 Personal project, tested on one G-RAID with Thunderbolt (firmware 140827300211, 2 × 4 TB).

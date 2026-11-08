@@ -29,6 +29,10 @@ arm64 targets macOS 13+ and x86_64 targets macOS 14+.
 
 ## The app
 
+A downloaded release isn't notarized, so the first time you open it macOS blocks it until you
+click **Open Anyway** in System Settings → Privacy & Security (see
+[Download](../README.md#download)). An app you build yourself opens without this.
+
 Copy `build/G-RAID Utility.app` to `/Applications` and open it. Status and warning icons are
 system symbols. The enclosure picture and app icon are G-Technology's, added locally with
 `tools/fetch-artwork.sh` (see [Resources/README.md](Resources/README.md)).
