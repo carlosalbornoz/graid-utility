@@ -23,8 +23,9 @@ checklist then walks you through Full Disk Access and connecting the G-RAID.
 > **The first time, macOS will refuse to open G-RAID Utility. That's expected, and the app is
 > fine.** macOS only opens downloaded apps without asking when the developer pays Apple for a
 > Developer ID ($99 a year) and sends every build to Apple to be checked ("notarized"). This is a
-> free, open-source project, so it isn't notarized. All the code is here to read, and you can
-> build the app yourself instead (see [graidctl/README.md](graidctl/README.md)).
+> free, open-source project, and paying Apple $99 a year just to give away a free app didn't seem
+> worth it, so it isn't notarized. All the code is here to read, and you can build the app
+> yourself instead (see [graidctl/README.md](graidctl/README.md)).
 
 **If macOS says "Apple could not verify G-RAID Utility is free of malware":**
 
