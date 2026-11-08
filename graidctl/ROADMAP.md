@@ -379,11 +379,12 @@ drive goes into the empty bay of a degraded RAID 1, so the app mostly guides and
   Only RAM addresses are read; never hardware registers (0xE000 and up), whose reads can have
   side effects.
 - **Rebuild display redone and safety changes built 2026-11-08** (renders checked; not yet seen on
-  hardware). Progress is shown once, on the receiving drive: its label card fills from the bottom
-  with a slowly breathing tint and shows the percentage, amount copied and time left in place of
-  its size; dots flow between the bays from the kept drive to the receiving one; the overview
-  only says "Rebuilding" and the Array row "Copying Bay 1 onto Bay 2". The Replace guide uses the
-  same fill, horizontally. Still under Reduce Motion (`RebuildFill`, `RebuildFlow`). Safety items
+  hardware). Progress is shown once, on the receiving drive: its label card shows the percentage, amount
+  copied and time left in place of its size, over a system progress bar (`ProgressView`; the
+  custom sweeping fill was dropped 2026-11-08 as unnatural); dots flow between the bays from the
+  kept drive to the receiving one; the overview only says "Rebuilding" and the Array row
+  "Copying Bay 1 onto Bay 2". The Replace guide uses the same system bar. `RebuildFlow` is still
+  under Reduce Motion. Safety items
   1–5 below are done: "Not in use"/"Checking" names (raw terms kept in the CLI and the report), no
   reinsert advice, a guide step for a set-aside drive with an in-app **Rebuild** (keep/erase with
   serials, a "files I want to keep" checkbox, red button; `AppModel.rebuild`), and swap detection

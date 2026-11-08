@@ -866,6 +866,8 @@ struct DriveBay: View {
                         Text(percentText(r.fraction)).font(.system(size: 26, weight: .semibold)).monospacedDigit()
                             .contentTransition(.numericText())
                         Text(copyLine(r)).font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                        ProgressView(value: r.fraction).controlSize(.small).padding(.top, 3)
+                            .accessibilityLabel("Rebuild progress")
                     }
                 } else {
                     Text(sizeText).font(.system(size: 26, weight: .semibold)).monospacedDigit().foregroundStyle(primary)
@@ -891,7 +893,6 @@ struct DriveBay: View {
         .background {
             if !ghost {
                 shape.fill(Color(nsColor: .controlBackgroundColor))
-                if let r = copyProgress { RebuildFill(fraction: r.fraction, vertical: false, edge: false).clipShape(shape) }
             }
         }
         .overlay(shape.strokeBorder(isFailed ? Color.red : Color(nsColor: .separatorColor),

@@ -152,11 +152,7 @@ struct ReplaceDriveSheet: View {
             detail = "Copying from Bay \(source + 1) · " + (left.map { "about \(durationText($0)) left" } ?? "working out the time left")
                 + (rate.map { " · \(speedText($0))" } ?? "")
             extra = AnyView(VStack(alignment: .leading, spacing: 6) {
-                RebuildFill(fraction: r.fraction, vertical: false)
-                    .frame(height: 12)
-                    .background(Color.secondary.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
+                ProgressView(value: r.fraction).accessibilityLabel("Rebuild progress")
                 HStack {
                     Text("\(percentText(r.fraction)) · \(formatBytes(Double(r.position) * 512)) of \(formatBytes(Double(r.end) * 512))")
                         .monospacedDigit()
@@ -304,66 +300,6 @@ struct StepRow: View {
                 .frame(width: 22, height: 22)
                 .overlay(Circle().strokeBorder(state == .current ? brandBlue : Color(nsColor: .separatorColor), lineWidth: state == .current ? 1.5 : 1))
         }
-    }
-}
-
-/// The rebuild fill: the copied part of a drive, tinted, with a soft lighter band sweeping
-/// through it in the direction of the copy (upward in a drive card, left to right in the guide),
-/// so it's plain that the copy is moving. Still when Reduce Motion is on.
-struct RebuildFill: View {
-    let fraction: Double
-    var vertical = true
-    var edge = true               // the thin front line (horizontal only); off where text crosses the fill
-    var frozenAt: Double? = nil   // tests/render_previews.sh: draw the sweep at this point (0–1)
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
-            // One sweep every 2.2 s, then a short rest before the next.
-            let cycle = frozenAt ?? (context.date.timeIntervalSinceReferenceDate / 2.6).truncatingRemainder(dividingBy: 1)
-            let p = min(1, cycle / 0.85)
-            GeometryReader { g in
-                let f = min(1, max(0, fraction))
-                if vertical {
-                    let h = g.size.height * f
-                    ZStack(alignment: .bottom) {
-                        Rectangle().fill(brandBlue.opacity(vertical ? 0.13 : 0.22))
-                        if !reduceMotion && h > 12 {
-                            SweepBand(vertical: true).frame(height: 30)
-                                .offset(y: -(h + 30) * p + 15)
-                        }
-                    }
-                    .frame(height: h)
-                    .clipped()
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                } else {
-                    let w = g.size.width * f
-                    ZStack(alignment: .leading) {
-                        Rectangle().fill(brandBlue.opacity(edge ? 0.22 : 0.13))
-                        if !reduceMotion && w > 12 {
-                            SweepBand(vertical: false).frame(width: 40)
-                                .offset(x: (w + 40) * p - 40)
-                        }
-                        if edge { Rectangle().fill(brandBlue).frame(width: 2).frame(maxWidth: .infinity, alignment: .trailing) }
-                    }
-                    .frame(width: w)
-                    .clipped()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-        }
-        .accessibilityHidden(true)
-    }
-}
-
-/// The light band in the rebuild fill: five solid strips, brightest in the middle, so its edges
-/// look soft without a gradient or a blur.
-struct SweepBand: View {
-    let vertical: Bool
-    private let steps: [Double] = [0.18, 0.38, 0.6, 0.38, 0.18]
-    var body: some View {
-        let strips = ForEach(Array(steps.enumerated()), id: \.offset) { _, o in Rectangle().fill(Color.white.opacity(o)) }
-        if vertical { VStack(spacing: 0) { strips } } else { HStack(spacing: 0) { strips } }
     }
 }
 
