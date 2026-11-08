@@ -33,10 +33,11 @@ enum DiskOps {
 
     /// Mount or unmount one partition with `diskutil` as root (one password prompt), for
     /// partitions macOS reserves for administrators. Blocks: call off the main thread.
-    nonisolated static func asAdmin(_ verb: String, _ bsd: String, name: String) -> String? {
+    nonisolated static func asAdmin(_ verb: String, _ bsd: String, name: String, readOnly: Bool = false) -> String? {
         guard ["mount", "unmount"].contains(verb),
               bsd.range(of: #"^disk[0-9]+s[0-9]+$"#, options: .regularExpression) != nil else { return "invalid partition" }
-        return Admin.run("/usr/sbin/diskutil \(verb) \(bsd)",
+        let option = verb == "mount" && readOnly ? "readOnly " : ""
+        return Admin.run("/usr/sbin/diskutil \(verb) \(option)\(bsd)",
                          prompt: "G-RAID Utility needs an administrator password to \(verb) the \(name) partition.")
     }
 
@@ -64,8 +65,18 @@ enum DiskOps {
     }
 
     /// Mount one volume (partition).
-    static func mount(_ bsd: String) async -> String? {
-        await run(bsd) { disk, ctx in DADiskMountWithArguments(disk, nil, DADiskMountOptions(kDADiskMountOptionDefault), callback, ctx, nil) }
+    static func mount(_ bsd: String, readOnly: Bool = false) async -> String? {
+        await run(bsd) { disk, ctx in
+            guard readOnly else {
+                DADiskMountWithArguments(disk, nil, DADiskMountOptions(kDADiskMountOptionDefault), callback, ctx, nil)
+                return
+            }
+            // Mount options, as for mount(8), in a NULL-terminated array.
+            var argv: [Unmanaged<CFString>?] = [Unmanaged.passUnretained("rdonly" as CFString), nil]
+            argv.withUnsafeMutableBufferPointer { args in
+                DADiskMountWithArguments(disk, nil, DADiskMountOptions(kDADiskMountOptionDefault), callback, ctx, args.baseAddress)
+            }
+        }
     }
 
     /// Unmount one volume (partition), leaving the others mounted.

@@ -137,7 +137,7 @@ final class AppModel: ObservableObject {
     @Published var units: [Unit] = []
     @Published var selectedID: String?
     @Published var lockedDisks: [String] = []   // external SATA disks we can't read yet
-    @Published var message: String?
+    @Published var message: Notice?
     @Published var isWorking = false
     @Published var lastUpdated: Date?
     @Published var suggestDiskUtility = false
@@ -463,7 +463,7 @@ final class AppModel: ObservableObject {
     /// only those readable by this user until they disconnect.
     func requestAccess() {
         guard let helper = Bundle.main.url(forAuxiliaryExecutable: "graidctl")?.path else {
-            message = "The graidctl helper is missing from the app bundle."
+            message = Notice(.problem, "The graidctl helper is missing from the app", "Reinstall G-RAID Utility to fix it.")
             return
         }
         isWorking = true
@@ -482,15 +482,15 @@ final class AppModel: ObservableObject {
                 p.waitUntilExit()
                 if p.terminationStatus != 0 {
                     let text = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                    failure = text.contains("-128") ? nil : "Access was not granted. \(text.trimmingCharacters(in: .whitespacesAndNewlines))"
+                    failure = text.contains("-128") ? nil : text.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
             } catch {
-                failure = "Could not ask for access: \(error)"
+                failure = "\(error)"
             }
             let reported = failure
             await MainActor.run {
                 self.isWorking = false
-                if let f = reported { self.message = f }
+                if let f = reported { self.message = Notice(.problem, "Access wasn't granted", f) }
                 self.refresh()
             }
         }
@@ -535,14 +535,14 @@ final class AppModel: ObservableObject {
                     ejectedDisks.remove(bsd)
                     var apps: [String] = []
                     for v in unit.volumes { for a in await DiskOps.appsUsing(v.url) where !apps.contains(a) { apps.append(a) } }
-                    message = apps.isEmpty
-                        ? "The G-RAID couldn't be ejected: \(why)"
-                        : "The G-RAID couldn't be ejected because it's in use by \(ListFormatter.localizedString(byJoining: apps)). Quit or close files there and try again."
+                    message = Notice(.problem, "The G-RAID couldn't be ejected", apps.isEmpty
+                        ? "\(why)."
+                        : "It's in use by \(ListFormatter.localizedString(byJoining: apps)). Quit or close files there and try again.")
                     isWorking = false
                     return
                 }
                 if let why = await DiskOps.eject(bsd) {
-                    message = "The volumes were unmounted, but the eject didn't finish: \(why). It's still safe to unplug."
+                    message = Notice(.info, "The volumes were unmounted, but the eject didn't finish", "\(why). It's still safe to unplug.")
                 }
             }
             log([GRAIDEvent(unitID: unit.id, unitName: name(of: unit), category: .connection, severity: .info,
@@ -560,12 +560,12 @@ final class AppModel: ObservableObject {
         else { path = selected?.path }
         guard let path else { return }
         isWorking = true
-        message = "Checking whether the drives are spinning…"
+        message = Notice(.info, "Checking whether the drives are spinning…")
         Task.detached {
-            let text: String
-            do { text = describeSpinState(try measureReadLatency(path: path)) }
-            catch { text = "Couldn't check: \(error)" }
-            await MainActor.run { self.message = text; self.isWorking = false }
+            let notice: Notice
+            do { notice = Notice(.info, describeSpinState(try measureReadLatency(path: path))) }
+            catch { notice = Notice(.problem, "Couldn't check whether the drives are spinning", "\(error)") }
+            await MainActor.run { self.message = notice; self.isWorking = false }
         }
     }
 
@@ -604,7 +604,7 @@ final class AppModel: ObservableObject {
             ejectedDisks = []
             isWorking = false
             mounting = false
-            if let f = failure { message = "The G-RAID couldn't be mounted: \(f)" }
+            if let f = failure { message = Notice(.problem, "The G-RAID couldn't be mounted", f) }
             scheduleRefresh(after: 1)
         }
     }
@@ -614,13 +614,16 @@ final class AppModel: ObservableObject {
         isWorking = true
         message = nil
         Task { @MainActor in
-            var why = await DiskOps.mount(p.bsd)
+            // System partitions (EFI and similar) mount read-only unless turned off in Settings,
+            // so macOS doesn't write its index folders onto them.
+            let readOnly = p.kind == .system && Pref.mountSystemReadOnly
+            var why = await DiskOps.mount(p.bsd, readOnly: readOnly)
             if why == DiskOps.notPermittedText {
                 // EFI and similar: ask for the administrator password and mount as root.
-                why = await Task.detached { DiskOps.asAdmin("mount", p.bsd, name: p.name) }.value
+                why = await Task.detached { DiskOps.asAdmin("mount", p.bsd, name: p.name, readOnly: readOnly) }.value
                 if why == "" { why = nil }   // cancelled the password prompt: say nothing
             }
-            if let why { message = "\(p.name) couldn't be mounted: \(why)" }
+            if let why { message = Notice(.problem, "\(p.name) couldn't be mounted", why) }
             isWorking = false
             scheduleRefresh(after: 0.5)
         }
@@ -640,9 +643,9 @@ final class AppModel: ObservableObject {
             if let why = result {
                 var apps: [String] = []
                 if let url = p.mountURL { apps = await DiskOps.appsUsing(url) }
-                message = apps.isEmpty
-                    ? "\(p.name) couldn't be unmounted: \(why)"
-                    : "\(p.name) couldn't be unmounted because it's in use by \(ListFormatter.localizedString(byJoining: apps))."
+                message = Notice(.problem, "\(p.name) couldn't be unmounted", apps.isEmpty
+                    ? why
+                    : "It's in use by \(ListFormatter.localizedString(byJoining: apps)). Quit or close files there and try again.")
             }
             isWorking = false
             scheduleRefresh(after: 0.5)
@@ -654,7 +657,7 @@ final class AppModel: ObservableObject {
         message = nil
         let unitName = self.name(of: unit)
         Task.detached {
-            var text: String
+            var notice: Notice
             var succeeded = false
             do {
                 let dev = try Device(path: unit.path)
@@ -665,18 +668,18 @@ final class AppModel: ObservableObject {
                 let payload = modeChangePayload(mode: mode, name: name, disks: disks)
                 switch try performModeChange(dev: dev, bsdNames: unit.bsdNames, payload: payload) {
                 case .accepted:
-                    text = "RAID mode changed to \(mode.label). The G-RAID reconnects in a few seconds. Then erase it in Disk Utility to create a volume."
+                    notice = Notice(.done, "Switched to \(mode.label)", "The G-RAID reconnects in a few seconds. Then create a volume on it in Disk Utility.")
                 case .noAck:
-                    text = "The G-RAID is resetting to \(mode.label). Wait about 30 seconds for it to reconnect, then erase it in Disk Utility to create a volume."
+                    notice = Notice(.info, "The G-RAID is switching to \(mode.label)", "Wait about 30 seconds for it to reconnect, then create a volume on it in Disk Utility.")
                 }
                 succeeded = true
                 let event = GRAIDEvent(unitID: unit.id, unitName: unitName, category: .config, severity: .info,
                                        title: "RAID mode change sent", detail: "\(unit.currentTarget?.label ?? modeText(unit.caps.currentMode)) → \(mode.label), named “\(name)”")
                 await MainActor.run { self.log([event]) }
             } catch {
-                text = "\(error)"
+                notice = Notice(.problem, "The mode wasn't changed", "\(error)")
             }
-            let reported = text
+            let reported = notice
             let ok = succeeded
             await MainActor.run {
                 self.message = reported

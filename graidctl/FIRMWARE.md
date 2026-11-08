@@ -308,6 +308,26 @@ What the Ghidra pass got wrong here (kept for the record):
   translated, not a rebuild position.
 - The status mapping (054F alone = Rebuilding) and "probably no automatic rebuild".
 
+### Seen on hardware 2026-11-08 (RAID 1, two HGST 4 TB; details in TESTING.md)
+
+- **RAID 1 creation copies nothing**: the array is Online the moment the unit reconnects (7 s
+  after the mode change). Sectors never written since can differ between the two disks.
+- **Bay numbering**: port 0 (the app's Bay 1 / Disk 1) is the **bottom** slot, port 1 the top.
+- **A pulled member that missed no writes is re-admitted with no copy**: reinserted, it reads
+  Rejected (status 6) for ~15 s, then Online, and the array goes straight back to Online.
+- **A pulled member that missed writes is demoted**: Rejected, then Blank (status 4), array stays
+  Degraded. Reinserting again repeats Rejected → Blank. **No automatic copy starts**, which fits
+  0x636A only acting on status 1 or 5.
+- **Then the controller rolled back by itself.** Within roughly 15–25 minutes of that demotion,
+  with no host command other than read-only status queries, the stale member became Online and
+  the up-to-date member Blank with order 0xFF (no longer a member). The volume stayed attached and
+  now serves the stale data: the writes made while degraded were silently lost. **Trigger unknown.**
+  Candidates to check in the decompilation: the main-loop paths that call 0x9165/0x916A (0xBFF6,
+  0xADD4), whatever re-reads each member's on-disk metadata after a hot-plug, and how a Blank
+  member's sequence or timestamp is compared with the Online member's. Until it's understood, a
+  RAID 1 on this firmware must be treated as unsafe to reinsert a drive into after the volume has
+  been written while degraded.
+
 ## Temperature and fans (confirmed: not reported)
 
 The Capabilities handler (0xDA14) hard-codes reply bytes 44–46 (TemperatureReport,

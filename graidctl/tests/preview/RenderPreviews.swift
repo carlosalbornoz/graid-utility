@@ -145,7 +145,7 @@ struct RenderPreviews {
         renderView("replace-waiting", sheetFor(rForeign, rm))
         renderView("replace-copying", sheetFor(rCopy, rm))
         renderView("replace-failed", sheetFor(rFail, rm))
-        renderView("change-step1-mismatch", AnyView(ChangeModeSheet(unit: mis.units[0], preview: (1, .raid1, ""), commit: { _, _ in }, cancel: {})))
+        renderView("change-step1-mismatch", AnyView(ChangeModeSheet(unit: mis.units[0], preview: (1, .raid1, false), commit: { _, _ in }, cancel: {})))
         let ind = AppModel(); ind.units = [customUnit(mode: 0, volumeBlocks: 0, drives: [(hgst, "PK1334PEHT4U9S", 0, tb4), nil])]; ind.phase = .ready
         render("array-individual-empty", ind)
         let locked = AppModel(); locked.lockedDisks = ["disk4"]; locked.phase = .needsAccess
@@ -161,8 +161,8 @@ struct RenderPreviews {
         ]
         let withVol = AppModel(); withVol.units = [u]; withVol.phase = .ready
         render("ready-with-volume", withVol)
-        renderView("change-step1", AnyView(ChangeModeSheet(unit: u, preview: (1, nil, ""), commit: { _, _ in }, cancel: {})))
-        renderView("change-step1-selected", AnyView(ChangeModeSheet(unit: u, preview: (1, .raid0, ""), commit: { _, _ in }, cancel: {})))
+        renderView("change-step1", AnyView(ChangeModeSheet(unit: u, preview: (1, nil, false), commit: { _, _ in }, cancel: {})))
+        renderView("change-step1-selected", AnyView(ChangeModeSheet(unit: u, preview: (1, .raid0, false), commit: { _, _ in }, cancel: {})))
         let hist = AppModel()
         hist.recentEvents = [
             GRAIDEvent(date: Date(timeIntervalSinceNow: -86400 * 2), unitID: "u", unitName: "G-RAID with Thunderbolt", category: .connection, severity: .info, title: "Connected", detail: "Performance - RAID 0"),
@@ -201,6 +201,16 @@ struct RenderPreviews {
         print("pdf:", HealthReport.writePDF(reportText, to: URL(fileURLWithPath: CommandLine.arguments[1] + "/health-report.pdf")))
         renderView("history", AnyView(HistoryView().environmentObject(hist).frame(width: 860, height: 260)))
         renderView("settings", AnyView(SettingsView().environmentObject(hist)))
-        renderView("change-step2", AnyView(ChangeModeSheet(unit: u, preview: (2, .raid0, "ERA"), commit: { _, _ in }, cancel: {})))
+        renderView("change-step2", AnyView(ChangeModeSheet(unit: u, preview: (2, .raid0, false), commit: { _, _ in }, cancel: {})))
+        renderView("change-step2-checked", AnyView(ChangeModeSheet(unit: u, preview: (2, .raid0, true), commit: { _, _ in }, cancel: {})))
+        renderView("change-step2-no-volume", AnyView(ChangeModeSheet(unit: r0.units[0], preview: (2, .raid1, false), commit: { _, _ in }, cancel: {})))
+        // Message bar: good news with an action, and a problem.
+        let done = AppModel(); done.phase = .startingUp; done.thunderboltGRAIDs = ["G-RAID with Thunderbolt"]
+        done.message = Notice(.done, "Switched to Protected (RAID 1)", "The G-RAID reconnects in a few seconds. Then create a volume on it in Disk Utility.")
+        done.suggestDiskUtility = true
+        render("notice-done", done)
+        let problem = AppModel(); problem.units = [sampleUnit(rebuilding: false)]; problem.phase = .ready
+        problem.message = Notice(.problem, "The G-RAID couldn't be ejected", "It's in use by Finder. Quit or close files there and try again.")
+        render("notice-problem", problem)
     }
 }

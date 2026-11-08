@@ -150,6 +150,12 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let notice = model.message {
+                NoticeBar(notice: notice,
+                          action: model.suggestDiskUtility ? ("Open Disk Utility", { openDiskUtility() }) : nil,
+                          dismiss: { model.message = nil; model.suggestDiskUtility = false })
+                Divider()
+            }
             Group {
                 switch model.phase {
                 case .scanning:
@@ -167,18 +173,6 @@ struct ContentView: View {
                 }
             }
             .frame(height: model.phase == .ready ? 500 : 440)
-            if let m = model.message {
-                Divider()
-                HStack(alignment: .top) {
-                    Image(systemName: "info.circle")
-                    Text(m).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                    Spacer()
-                    if model.suggestDiskUtility { Button("Open Disk Utility") { openDiskUtility() } }
-                    Button("Dismiss") { model.message = nil; model.suggestDiskUtility = false }.buttonStyle(.link)
-                }
-                .padding(12)
-                .background(.thinMaterial)
-            }
         }
         .frame(width: 940)   // fixed: the window always fits the content
         // No window-wide tint: standard buttons keep macOS's own high-contrast styling. Blue is
@@ -481,7 +475,7 @@ struct ArrayTab: View {
             if let blocker { Text(blocker).font(.caption).foregroundStyle(.secondary) }
         }
         .sheet(isPresented: $sheet.open) {
-            ChangeModeSheet(unit: unit, preview: sheet.choice.map { (1, $0, "") }) { mode, name in
+            ChangeModeSheet(unit: unit, preview: sheet.choice.map { (1, $0, false) }) { mode, name in
                 sheet.open = false
                 model.changeMode(unit: unit, mode: mode, name: name)
             } cancel: { sheet.open = false }
@@ -1037,7 +1031,7 @@ struct VolumesTab: View {
     private func otherDetail(_ p: Partition) -> String {
         var parts = [formatBytes(p.size), p.format]
         if p.kind == .unreadable { parts.append("macOS can't read it") }
-        else { parts.append(p.isMounted ? "Mounted" : (p.mountable ? "Not mounted" : "Can't be mounted")) }
+        else { parts.append(p.isMounted ? (p.readOnly ? "Mounted, read-only" : "Mounted") : (p.mountable ? "Not mounted" : "Can't be mounted")) }
         return parts.joined(separator: " · ")
     }
 }
@@ -1302,5 +1296,70 @@ struct EventRow: View {
         case "Ejected": return .secondary
         default: return event.severity == .critical ? .red : event.severity == .warning ? .orange : .secondary
         }
+    }
+}
+
+// MARK: - Messages
+
+/// A message shown in the bar under the toolbar: a short title, an optional sentence, and a tone
+/// that picks the icon.
+struct Notice: Equatable {
+    enum Tone { case done, problem, info }
+    let tone: Tone
+    let title: String
+    let detail: String?
+    init(_ tone: Tone, _ title: String, _ detail: String? = nil) {
+        self.tone = tone; self.title = title; self.detail = detail
+    }
+}
+
+/// The message bar under the toolbar, where macOS apps put information bars. The icon, the text
+/// block, the action and the close button share one centre line.
+struct NoticeBar: View {
+    let notice: Notice
+    var action: (String, () -> Void)? = nil
+    let dismiss: () -> Void
+
+    private var symbol: String {
+        switch notice.tone {
+        case .done: return "checkmark.circle.fill"
+        case .problem: return "exclamationmark.triangle.fill"
+        case .info: return "info.circle.fill"
+        }
+    }
+    private var tint: Color {
+        switch notice.tone {
+        case .done: return .green
+        case .problem: return .orange
+        case .info: return brandBlue
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: symbol).font(.system(size: 18)).foregroundStyle(tint).frame(width: 22)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(notice.title).font(.callout.weight(.semibold))
+                if let d = notice.detail {
+                    Text(d).font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+            Spacer(minLength: 16)
+            if let action { Button(action.0, action: action.1) }
+            Button(action: dismiss) {
+                Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).frame(width: 22, height: 22)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("Dismiss")
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .accessibilityElement(children: .contain)
     }
 }

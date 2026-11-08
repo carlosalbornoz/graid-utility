@@ -241,8 +241,15 @@ macOS lets only an administrator mount an EFI partition (DiskArbitration "not pe
 `diskutil mount` fails as a user), so Mount/Unmount on a system partition falls back to one
 password prompt running `diskutil mount|unmount diskNsM` as root.
 
+System partitions mount **read-only by default** (added 2026-11-08, after the first hardware test
+showed macOS writing `.fseventsd` and `.Spotlight-V100` onto a read-write EFI mount). Settings →
+Partitions → "Mount system partitions read-only" turns it off for anyone who needs to edit files
+there. DiskArbitration gets the `rdonly` mount option; the admin fallback runs
+`diskutil mount readOnly`. Both checked on a throwaway FAT disk image. Volumes always mount
+normally. The partition list says "Mounted, read-only".
+
 Verified on hardware: listing (EFI system, G-RAID exFAT), Unmount and Mount of the data volume,
-Device → Partitions menu. EFI mount needs the user's password, so it was not tried by the agent.
+Device → Partitions menu. EFI mount with the user's password tried 2026-11-08: mounts and lists (empty FAT32).
 APFS listing verified against the Mac's internal disk only.
 
 ## UI redesign: Liquid Glass — built and verified on hardware 2026-11-07
@@ -307,6 +314,16 @@ Mocked up first (`mockups/LiquidGlassMock.swift`, `mockups/render_mock.sh`), the
   status no longer reads "Online" beside a failed drive. "Disks: n of 2 online" counts drives
   that still answer (Predictive Failure, Verifying, Migrating). Self-tested; not seen on hardware.
 
+- **Message bar and erase sheet redone 2026-11-08**, after the first real mode change. Messages
+  now sit in a bar under the toolbar (where macOS puts information bars) as a short title plus one
+  sentence, with a green check, orange triangle or blue ⓘ by tone, and the action and ✕ on one
+  centre line (`Notice`, `NoticeBar` in MainUI.swift). The erase confirmation leads with a red bar
+  stating what is lost ("718 GB of files on G-RAID will be deleted", or "Everything…" when it
+  can't be measured), then Now → After cards with usage bars, one plain sentence on the trade-off,
+  numbered next steps and folded disk details. Typing ERASE was replaced, by choice, with a
+  "My files are backed up somewhere else" checkbox; the button names the amount
+  ("Erase 718 GB and Switch"). Mockups: `mockups/BannerEraseOptions.swift`.
+
 ## Phase 3: create the volume after a mode change (item 7)
 
 - After a mode change succeeds and the unit reconnects (matched by unique ID), the app
@@ -361,9 +378,26 @@ drive goes into the empty bay of a degraded RAID 1, so the app mostly guides and
   progress bar and a real ETA back. Until then, the estimate uses the manual's 2 h per TB.
   Only RAM addresses are read; never hardware registers (0xE000 and up), whose reads can have
   side effects.
-- **Manual Rebuild button** (fallback, last): for when an automatic rebuild doesn't start. The
-  packet is known: a normal ModeChange with payload[0x0A] = 0x81 and the source port first at
-  0x1C. It needs spare disks to test, and the same "destination is erased" confirmation.
+- **Manual rebuild — CLI built 2026-11-08, not yet run on hardware.** `graidctl rebuild --from
+  <1|2> [diskN] --yes-overwrite-other-bay` sends a ModeChange to RAID 1 with payload[0x0A] = 0x81
+  and the source port at 0x1C (`rebuildPayload`, `rebuildProblem`, 9 self-tests). It refuses
+  unless the array is RAID 1 and Degraded, the source is Online and the target is Blank, Rejected,
+  ID Mismatch, Spare or Not Participating and big enough; it prints both serials and asks for
+  REBUILD. Its first real attempt correctly refused: the controller had swapped members (below).
+  The app button waits until the rebuild is proven on hardware.
+- **Reinserting a drive can roll the mirror back (found on hardware 2026-11-08, TESTING.md).**
+  A drive that missed writes is demoted to Blank on reinsertion, but some minutes later the
+  controller made it the Online member and dropped the up-to-date drive, silently discarding the
+  writes made while degraded. Until the trigger is understood, the app must:
+  1. Never suggest reinserting a drive that was out while the volume was in use. The Replace
+     guide's "take it out and insert it again" advice for a waiting drive goes.
+  2. When a member comes back as Rejected/Blank, say plainly: "This drive missed changes made while
+     it was out. Don't use it as the copy source." Offer the rebuild from the bay that stayed in.
+  3. Watch for a member swap (Online ↔ Blank between two checks) and raise a critical event and
+     notification: "The G-RAID switched to the other drive's copy. Changes made since Bay N was
+     removed may be missing."
+  4. Treat a Blank drive in a degraded RAID 1 as "waiting for a manual rebuild", not "insert again".
+
 
 ## Several G-RAIDs at once — names fixed 2026-11-08
 

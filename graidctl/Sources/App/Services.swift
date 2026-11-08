@@ -13,15 +13,18 @@ enum Pref {
     static let notifyConnection = "notifyConnection"
     static let notifyConfig = "notifyConfig"
     static let letDrivesSleep = "letDrivesSleep"
+    static let systemReadOnly = "mountSystemPartitionsReadOnly"
 
     static func register() {
         UserDefaults.standard.register(defaults: [
             monitorEnabled: false, notifyDisk: true, notifyArray: true, notifyConnection: false, notifyConfig: false,
-            letDrivesSleep: true,
+            letDrivesSleep: true, systemReadOnly: true,
         ])
     }
     static var monitor: Bool { UserDefaults.standard.bool(forKey: monitorEnabled) }
     static var drivesMaySleep: Bool { UserDefaults.standard.bool(forKey: letDrivesSleep) }
+    /// EFI and other system partitions mount read-only unless the user turns this off.
+    static var mountSystemReadOnly: Bool { UserDefaults.standard.bool(forKey: systemReadOnly) }
 }
 
 // MARK: - Running a command and reading its output

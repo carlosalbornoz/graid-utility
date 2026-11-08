@@ -123,7 +123,7 @@ extension TargetMode {
 
 struct ChangeModeSheet: View {
     let unit: Unit
-    var preview: (step: Int, choice: TargetMode?, typed: String)? = nil   // used by tests/render_previews.sh
+    var preview: (step: Int, choice: TargetMode?, backedUp: Bool)? = nil   // used by tests/render_previews.sh
     let commit: (TargetMode, String) -> Void
     let cancel: () -> Void
 
@@ -131,7 +131,8 @@ struct ChangeModeSheet: View {
         @Published var step = 1
         @Published var choice: TargetMode?
         @Published var name = "G-RAID"
-        @Published var typed = ""
+        @Published var backedUp = false
+        @Published var showDisks = false
     }
     @StateObject private var form = Form()
 
@@ -143,7 +144,7 @@ struct ChangeModeSheet: View {
         .frame(width: 540)
         .onAppear {
             if !unit.caps.raidSetName.isEmpty { form.name = unit.caps.raidSetName }
-            if let p = preview { form.step = p.step; form.choice = p.choice; form.typed = p.typed }
+            if let p = preview { form.step = p.step; form.choice = p.choice; form.backedUp = p.backedUp }
         }
     }
 
@@ -175,7 +176,7 @@ struct ChangeModeSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
-                Button("Continue") { form.typed = ""; form.step = 2 }
+                Button("Continue") { form.backedUp = false; form.step = 2 }
                     .keyboardShortcut(.defaultAction)
                     .disabled(form.choice == nil || problem != nil)
             }
@@ -252,51 +253,183 @@ struct ChangeModeSheet: View {
         return modeChangeProblem(mode: c, name: form.name, disks: unit.disks)
     }
 
-    // Step 2
+    // Step 2: what is lost, what you get, what happens next, and a backup checkbox.
     private var confirmStep: some View {
         let mode = form.choice ?? .raid1
+        let used = unit.volumes.reduce(0) { $0 + $1.used }
         return VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "exclamationmark.triangle.fill").symbolRenderingMode(.multicolor)
-                    .font(.system(size: 40)).frame(width: 52, height: 52).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Erase everything on this G-RAID?").font(.title2.weight(.semibold))
-                    Text("Switching from \(unit.currentTarget?.label ?? modeText(unit.caps.currentMode)) to \(mode.label) deletes all data on both disks. This can't be undone.")
-                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .center, spacing: 14) {
+                asset("Img_Device_GRAID").resizable().scaledToFit().foregroundStyle(.secondary).frame(width: 72)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Switch the G-RAID to \(mode.name)?").font(.title2.weight(.semibold))
+                    Text("To switch modes, the G-RAID starts over empty.").foregroundStyle(.secondary)
                 }
             }
-            VStack(alignment: .leading, spacing: 6) {
-                if unit.volumes.isEmpty {
-                    Label("No volume is mounted, so the data on it can't be measured.", systemImage: "externaldrive")
-                } else {
-                    ForEach(unit.volumes, id: \.url) { v in
-                        Label("\(v.name): \(formatBytes(v.used)) of data will be erased", systemImage: "externaldrive.fill")
-                            .foregroundStyle(v.used > 0 ? .red : .primary)
+            lossBar(used: used)
+            HStack(spacing: 10) {
+                SetupCard(label: "Now", symbol: unit.currentTarget?.symbol ?? "externaldrive",
+                          mode: unit.currentTarget?.name ?? modeText(unit.caps.currentMode),
+                          detail: unit.currentTarget.map(Self.layout) ?? "",
+                          fraction: nowCapacity > 0 ? used / nowCapacity : 0,
+                          usage: unit.volumes.isEmpty ? formatBytes(nowCapacity) : "\(formatBytes(used)) used of \(formatBytes(nowCapacity))",
+                          usageColor: .primary)
+                Image(systemName: "arrow.right").font(.system(size: 14, weight: .semibold)).foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                SetupCard(label: "After", symbol: mode.symbol, mode: mode.name, detail: Self.layout(mode),
+                          fraction: 0, usage: "Empty · \(formatBytes(capacity(mode))) free", usageColor: .secondary)
+            }
+            Text(benefit(mode))
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            NumberedSteps(title: "What happens next", steps: [
+                "The G-RAID ejects and sets itself up. Takes a few seconds.",
+                "It reconnects by itself, empty.",
+                mode == .individual ? "Create a volume on each disk in Disk Utility, then copy your files back."
+                    : "Create a volume on it in Disk Utility, then copy your files back.",
+            ])
+            DisclosureGroup(isExpanded: $form.showDisks) {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(unit.disks.presentPorts, id: \.index) { p in
+                        Text("Disk \(p.index + 1): \(p.model) · S/N \(p.serial) · \(formatBytes(p.capacityBytes))")
+                            .textSelection(.enabled)
                     }
                 }
-                ForEach(unit.unmountedVolumes) { p in
-                    Label("\(p.name) (not mounted): everything on it will be erased", systemImage: "externaldrive")
-                        .foregroundStyle(.red)
-                }
-                Label("New setup: \(unit.resultText(for: mode))", systemImage: mode.symbol)
-                ForEach(unit.disks.presentPorts, id: \.index) { p in
-                    Label("Disk \(p.index + 1): \(p.model), S/N \(p.serial)", systemImage: "internaldrive").foregroundStyle(.secondary)
-                }
+                .font(.callout).foregroundStyle(.secondary).padding(.top, 4)
+            } label: {
+                Text(disksSummary).font(.callout).foregroundStyle(.secondary)
             }
-            .font(.callout)
-            Text("Next: the volume is ejected, the G-RAID rebuilds the array and reconnects. Then use Disk Utility to erase it and create a new volume.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Type ERASE to confirm").font(.caption).foregroundStyle(.secondary)
-                TextField("ERASE", text: $form.typed).textFieldStyle(.roundedBorder)
-            }
+            Divider()
+            Toggle(isOn: $form.backedUp) { Text("My files are backed up somewhere else") }
+                .toggleStyle(.checkbox)
             HStack {
                 Button("Back") { form.step = 1 }
                 Spacer()
                 Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
-                Button("Erase and Set Up \(mode.name)") { commit(mode, form.name) }
+                Button(used > 0 ? "Erase \(formatBytes(used)) and Switch" : "Erase and Switch") { commit(mode, form.name) }
                     .buttonStyle(.borderedProminent).tint(.red)
-                    .disabled(form.typed != "ERASE")
+                    .disabled(!form.backedUp)
+            }
+        }
+    }
+
+    /// The red bar that says what is lost, with the amount when it can be measured.
+    private func lossBar(used: Double) -> some View {
+        let names = unit.volumes.map(\.name)
+        let unmounted = unit.unmountedVolumes.map(\.name)
+        let title: String
+        if !names.isEmpty && used > 0 {
+            title = "\(formatBytes(used)) of files on \(ListFormatter.localizedString(byJoining: names)) will be deleted"
+        } else if !names.isEmpty && unmounted.isEmpty {
+            title = "\(ListFormatter.localizedString(byJoining: names)) is empty, but it will be erased too"
+        } else {
+            title = "Everything on the G-RAID will be deleted"
+        }
+        var detail = "Both disks are erased, all \(formatBytes(nowCapacity)), and nothing on them can be recovered afterwards."
+        if !unmounted.isEmpty {
+            detail += " That includes \(ListFormatter.localizedString(byJoining: unmounted)), which isn't mounted, so its size can't be shown."
+        } else if names.isEmpty {
+            detail += " No volume is mounted, so how much is stored can't be shown."
+        }
+        detail += " Back up anything you need first."
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 17)).foregroundStyle(.red)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.body.weight(.semibold))
+                Text(detail).font(.callout).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.red.opacity(0.45), lineWidth: 0.5))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func capacity(_ mode: TargetMode) -> Double {
+        let ports = unit.disks.presentPorts
+        guard let first = ports.first else { return 0 }
+        return modeCapacity(mode, members: ports.map(\.totalBlocks), bytesPerBlock: UInt64(first.bytesPerBlock)).usable
+    }
+    private var nowCapacity: Double { unit.currentTarget.map(capacity) ?? unit.volumeBytes }
+
+    private static func layout(_ mode: TargetMode) -> String {
+        switch mode {
+        case .individual: return "Two separate disks"
+        case .raid0: return "RAID 0 · no copy"
+        case .raid1: return "RAID 1 · copy on each disk"
+        }
+    }
+
+    private func benefit(_ mode: TargetMode) -> String {
+        let after = formatBytes(capacity(mode)), now = formatBytes(nowCapacity)
+        switch mode {
+        case .raid1: return "You'll have \(after) instead of \(now), but every file is kept on both disks, so the G-RAID keeps working if one of them fails."
+        case .raid0: return "You'll have \(after) in one fast volume instead of \(now), but if either disk fails, everything on the G-RAID is lost."
+        case .individual: return "Each disk becomes its own volume. If one disk fails, only the files on that disk are lost."
+        }
+    }
+
+    private var disksSummary: String {
+        let models = unit.disks.presentPorts.map(\.model)
+        if let first = models.first, models.allSatisfy({ $0 == first }) { return "Disks: \(models.count) × \(first)" }
+        return "Disks: " + models.joined(separator: ", ")
+    }
+}
+
+/// One side of the before/after in the erase confirmation: the mode and how full it is.
+struct SetupCard: View {
+    let label: String
+    let symbol: String
+    let mode: String
+    let detail: String
+    let fraction: Double
+    let usage: String
+    let usageColor: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Image(systemName: symbol).font(.system(size: 17)).foregroundStyle(brandBlue).frame(width: 22)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(mode).font(.body.weight(.semibold))
+                    if !detail.isEmpty { Text(detail).font(.callout).foregroundStyle(.secondary) }
+                }
+            }
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.secondary.opacity(0.18))
+                    Capsule().fill(brandBlue).frame(width: fraction > 0 ? max(4, g.size.width * min(1, fraction)) : 0)
+                }
+            }
+            .frame(height: 6)
+            .accessibilityHidden(true)
+            Text(usage).font(.callout).foregroundStyle(usageColor).monospacedDigit()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// A short numbered list, for "what happens next".
+struct NumberedSteps: View {
+    let title: String
+    let steps: [String]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.callout.weight(.semibold))
+            ForEach(Array(steps.enumerated()), id: \.offset) { i, step in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("\(i + 1)").font(.caption.weight(.semibold)).monospacedDigit().foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16).overlay(Circle().strokeBorder(Color(nsColor: .separatorColor)))
+                        .accessibilityHidden(true)
+                    Text(step).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }

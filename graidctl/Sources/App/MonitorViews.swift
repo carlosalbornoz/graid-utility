@@ -13,6 +13,7 @@ struct SettingsView: View {
     @AppStorage(Pref.notifyConnection) private var notifyConnection = false
     @AppStorage(Pref.notifyConfig) private var notifyConfig = false
     @AppStorage(Pref.letDrivesSleep) private var letDrivesSleep = true
+    @AppStorage(Pref.systemReadOnly) private var systemReadOnly = true
     @Environment(\.openWindow) private var openWindow
 
     final class ServiceState: ObservableObject {
@@ -86,6 +87,12 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 serviceStatus
             } header: { Text("Automatic Unlock") }
+
+            Section {
+                Toggle("Mount system partitions read-only", isOn: $systemReadOnly)
+                Text("System partitions such as EFI hold startup files, not your data. Read-only lets you look inside without macOS or other apps changing anything; mounted normally, macOS adds its own index folders to them. Turn this off only to edit files there. Your volumes always mount normally.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } header: { Text("Partitions") }
 
             Section {
                 HStack {

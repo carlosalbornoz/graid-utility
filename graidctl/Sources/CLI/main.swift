@@ -128,6 +128,40 @@ func cmdSetMode(device: String?, mode: TargetMode, name: String, confirmed: Bool
     }
 }
 
+/// Manual rebuild (the old app's Rebuild button): copies the source bay onto the other bay of a
+/// degraded RAID 1. For when the automatic copy doesn't start, e.g. a returning drive the
+/// controller has marked Blank.
+func cmdRebuild(device: String?, sourceBay: Int?, confirmed: Bool, anyProtocol: Bool, verbose: Bool) throws {
+    try requireRoot()
+    guard let bay = sourceBay, bay == 1 || bay == 2 else { throw ToolError("rebuild needs --from 1 or --from 2: the bay holding the good copy") }
+    let source = bay - 1
+    let (dev, cand) = try pickDevice(device, anyProtocol: anyProtocol, verbose: verbose)
+    let (caps, raid, disks) = try fetchAll(dev)
+    if let problem = rebuildProblem(caps: caps, raid: raid, disks: disks, source: source) { throw ToolError(problem) }
+    let present = disks.presentPorts
+    let src = present.first { $0.index == source }!, dst = present.first { $0.index == 1 - source }!
+
+    print("Array:   \(caps.raidSetName.isEmpty ? "(no name)" : caps.raidSetName), Protected (RAID 1), \(volumeStatusText(raid.volume(0).status))")
+    print("Keep:    Bay \(bay)  \(src.model)  S/N \(src.serial)  \(diskStatusText(src.status))")
+    print("Erase:   Bay \(2 - source)  \(dst.model)  S/N \(dst.serial)  \(diskStatusText(dst.status))")
+    print("\nEverything on the drive in Bay \(2 - source) is overwritten with a copy of Bay \(bay).")
+    print("The volume is unmounted first; the G-RAID may reconnect. The copy then runs by itself.")
+    if !confirmed {
+        print("Re-run with --yes-overwrite-other-bay to proceed.")
+        return
+    }
+    print("Type REBUILD to continue: ", terminator: "")
+    guard readLine() == "REBUILD" else { print("Cancelled."); return }
+
+    let bsd = [cand?.bsdName ?? dev.path.replacingOccurrences(of: "/dev/r", with: "")]
+    switch try performModeChange(dev: dev, bsdNames: bsd, payload: rebuildPayload(source: source, name: caps.raidSetName, disks: disks)) {
+    case .accepted:
+        print("Rebuild accepted. Check progress with `sudo graidctl status` or in G-RAID Utility.")
+    case .noAck:
+        print("No acknowledgement (the controller may be resetting). Wait about 30 seconds and run `sudo graidctl status`.")
+    }
+}
+
 /// Read-only dump of the controller's flash. Reads twice and writes the file only if both
 /// passes match, so a glitchy read can't produce a corrupt backup.
 func cmdFirmwareDump(file: String?, device: String?, size: UInt32, anyProtocol: Bool, verbose: Bool) throws {
@@ -264,6 +298,8 @@ USAGE
   sudo graidctl list                         Find G-RAID controllers
   sudo graidctl status [diskN]               Firmware, RAID mode/state, disks
   sudo graidctl set-mode <individual|raid0|raid1> [diskN] [--name NAME] --yes-erase-all-data
+  sudo graidctl rebuild --from <1|2> [diskN] --yes-overwrite-other-bay
+                                             Degraded RAID 1: copy the good bay onto the other one
   sudo graidctl spin-check diskN             Are the drives spinning? (times random reads)
   sudo graidctl firmware-dump [file] [diskN] [--size 0x1F000]
                                              Back up the controller firmware (read-only, read twice)
@@ -294,6 +330,8 @@ let json = flag("--json")
 let anyProto = flag("--any-protocol")
 simulate = flag("--simulate")
 let confirmed = flag("--yes-erase-all-data")
+let overwriteConfirmed = flag("--yes-overwrite-other-bay")
+let fromBay = option("--from").flatMap { Int($0) }
 let setName = option("--name") ?? "G-RAID"
 
 do {
@@ -306,6 +344,8 @@ do {
         let modes: [String: TargetMode] = ["individual": .individual, "raid0": .raid0, "raid1": .raid1]
         guard let m = rest.first.flatMap({ modes[$0.lowercased()] }) else { throw ToolError("set-mode needs one of: individual, raid0, raid1") }
         try cmdSetMode(device: rest.dropFirst().first, mode: m, name: setName, confirmed: confirmed, anyProtocol: anyProto, verbose: verbose)
+    case "rebuild":
+        try cmdRebuild(device: rest.first, sourceBay: fromBay, confirmed: overwriteConfirmed, anyProtocol: anyProto, verbose: verbose)
     case "grant-access": try cmdGrantAccess(uidString: option("--uid"), anyProtocol: anyProto)
     case "unlock-daemon": try cmdUnlockDaemon(uidString: option("--uid"))
     case "partitions":

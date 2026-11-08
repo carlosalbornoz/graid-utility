@@ -598,6 +598,28 @@ func selfTest() -> Bool {
     check("replace: paused and failed", computeReplaceStep(mode: 2, volumeStatus: 8, bays: [0, 0x11]) == .paused(bay: 1) && computeReplaceStep(mode: 2, volumeStatus: 3, bays: [0, 0]) == .failed(bay: nil))
     check("replace: nothing to do when online", computeReplaceStep(mode: 2, volumeStatus: 0, bays: [0, 0]) == nil)
     check("replace: no guide when no copy survives", computeReplaceStep(mode: 2, volumeStatus: 0x11, bays: [8, nil]) == nil)
+    // --- Manual rebuild ---
+    func rebuildSnap(mode: UInt8 = 2, vol: UInt8 = 1, ports: [UInt8]) -> (caps: Capabilities, raid: RaidStatus, disks: DiskStatus) {
+        var c = ControllerSimulator.capturedCaps; c[36] = mode
+        var r = ControllerSimulator.capturedRaid; r[4] = vol
+        let blocks: UInt64 = 7_813_922_816   // RAID 1 of two 4 TB drives
+        for i in 0..<8 { r[4 + 8 + i] = UInt8((blocks >> (56 - 8 * UInt64(i))) & 0xFF) }
+        var d = ControllerSimulator.capturedDisks
+        for (i, st) in ports.enumerated() { d[4 + i * 76] = st }
+        return (Capabilities(raw: c), RaidStatus(raw: r), DiskStatus(raw: d))
+    }
+    func rebuildCheck(_ u: (caps: Capabilities, raid: RaidStatus, disks: DiskStatus), source: Int) -> String? { rebuildProblem(caps: u.caps, raid: u.raid, disks: u.disks, source: source) }
+    check("rebuild: Blank bay 1 from Online bay 2 is allowed", rebuildCheck(rebuildSnap(ports: [4, 0]), source: 1) == nil)
+    check("rebuild: never from the stale or blank drive", rebuildCheck(rebuildSnap(ports: [4, 0]), source: 0) != nil)
+    check("rebuild: refused when the array is Online", rebuildCheck(rebuildSnap(vol: 0, ports: [0, 0]), source: 1) != nil)
+    check("rebuild: refused outside RAID 1", rebuildCheck(rebuildSnap(mode: 1, ports: [4, 0]), source: 1) != nil)
+    check("rebuild: refused onto a Failed drive", rebuildCheck(rebuildSnap(ports: [8, 0]), source: 1) != nil)
+    check("rebuild: refused while a copy is running", rebuildCheck(rebuildSnap(vol: 2, ports: [1, 0]), source: 1) != nil)
+    let rp = rebuildPayload(source: 1, name: "G-RAID", disks: rebuildSnap(ports: [4, 0]).disks)
+    check("rebuild payload: RAID 1 with the rebuild flag", rp[0x08] == 2 && rp[0x09] == 0x80 && rp[0x0A] == 0x81)
+    check("rebuild payload: source bay 2 onto bay 1", rp[0x1C] == 1 && rp[0x1D] == 0 && Array(rp[0x1E...0x20]) == [2, 5, 5])
+    check("rebuild payload: rest as a mode change", Array(rp[0x0C..<0x14]) == [UInt8](repeating: 0, count: 8)
+          && Array(rp[0x14..<0x1C]) == [UInt8](repeating: 0xFF, count: 8) && String(decoding: rp[0x5C..<0x62], as: UTF8.self) == "G-RAID")
     check("replace: not for RAID 0", computeReplaceStep(mode: 1, volumeStatus: 0x11, bays: [0, nil]) == nil)
     check("replace: minimum size covers the reserve", arrayBlocks(.raid1, members: [replacementMinBlocks(volumeBlocks: 7_813_922_816)]) == 7_813_922_816)
     check("replace: 4 TB mirror takes about 8 hours", abs(rebuildEstimate(volumeBytes: 4.0e12) - 8 * 3600) < 1)
@@ -848,6 +870,39 @@ func modeChangePayload(mode: TargetMode, name: String, disks: DiskStatus) -> [UI
     for i in 0x14..<0x1C { p[i] = 0xFF }
     p.replaceSubrange(0x1C...0x20, with: [0x00, 0x01, 0x02, 0x05, 0x05])
     for (i, b) in name.utf8.prefix(15).enumerated() { p[0x5C + i] = b }
+    return p
+}
+
+/// Why a manual rebuild can't run, or nil. A rebuild copies the source bay (0 or 1) onto the
+/// other bay of a degraded RAID 1. The source must be Online; the other bay must hold a disk the
+/// controller isn't using (Blank, ID Mismatch, Rejected, Spare or Not Participating) that's big enough.
+func rebuildProblem(caps: Capabilities, raid: RaidStatus, disks: DiskStatus, source: Int) -> String? {
+    guard caps.currentMode == 2 else { return "A rebuild only applies to Protected (RAID 1). This G-RAID is \(modeText(caps.currentMode))." }
+    let volume = raid.volume(0)
+    guard volume.status == 1 else { return "The array is \(volumeStatusText(volume.status)), not Degraded, so there's nothing to rebuild." }
+    guard source == 0 || source == 1 else { return "The source must be Bay 1 or Bay 2." }
+    let present = disks.presentPorts
+    guard let src = present.first(where: { $0.index == source }) else { return "Bay \(source + 1) is empty; the source must hold the good copy." }
+    guard src.status == 0 else { return "Bay \(source + 1) is \(diskStatusText(src.status)). The source must be Online: it's the copy that's kept." }
+    guard let dst = present.first(where: { $0.index == 1 - source }) else { return "Bay \(2 - source) is empty. Insert the drive to copy onto first." }
+    guard [4, 5, 6, 9, 0xA].contains(dst.status) else {
+        return "Bay \(2 - source) is \(diskStatusText(dst.status)). Only a Blank, Rejected, ID Mismatch, Spare or Not Participating drive can be copied onto."
+    }
+    let need = replacementMinBlocks(volumeBlocks: volume.totalBlocks)
+    guard dst.totalBlocks >= need else {
+        return "The drive in Bay \(2 - source) is too small: \(formatBytes(dst.capacityBytes)), and the copy needs \(formatBytes(Double(need) * Double(dst.bytesPerBlock)))."
+    }
+    return nil
+}
+
+/// The old app's Rebuild_thread: a normal ModeChange to RAID 1 with payload[0x0A] = 0x81 (the
+/// rebuild flag, so the source member's data is kept) and the copy direction at 0x1C/0x1D
+/// (FIRMWARE.md "Rebuild").
+func rebuildPayload(source: Int, name: String, disks: DiskStatus) -> [UInt8] {
+    var p = modeChangePayload(mode: .raid1, name: name, disks: disks)
+    p[0x0A] = 0x81
+    p[0x1C] = UInt8(source)
+    p[0x1D] = UInt8(1 - source)
     return p
 }
 
