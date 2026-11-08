@@ -381,10 +381,12 @@ drive goes into the empty bay of a degraded RAID 1, so the app mostly guides and
 - **Rebuild display redone and safety changes built 2026-11-08** (renders checked; not yet seen on
   hardware). Progress is shown once, on the receiving drive: its label card shows the percentage, amount
   copied and time left in place of its size, over a system progress bar (`ProgressView`; the
-  custom sweeping fill was dropped 2026-11-08 as unnatural); dots flow between the bays from the
-  kept drive to the receiving one; the overview only says "Rebuilding" and the Array row
-  "Copying Bay 1 onto Bay 2". The Replace guide uses the same system bar. `RebuildFlow` is still
-  under Reduce Motion. Safety items
+  custom sweeping fill was dropped 2026-11-08 as unnatural, and so were the dots that flowed between
+  the bays); the overview only says "Rebuilding" and the Array row "Copying Bay 1 onto Bay 2". The
+  Replace guide uses the same system bar. Same day, more custom parts moved to system ones: the
+  capacity bar is a `Gauge` (`.linearCapacity`), both speed charts use Swift Charts, the toolbar's
+  Refreshing state uses the system spinner, and bytes, percentages, durations and speeds use
+  Foundation's formatters (so "4 TB", "41%", following the Mac's language and region). Safety items
   1–5 below are done: "Not in use"/"Checking" names (raw terms kept in the CLI and the report), no
   reinsert advice, a guide step for a set-aside drive with an in-app **Rebuild** (keep/erase with
   serials, a "files I want to keep" checkbox, red button; `AppModel.rebuild`), and swap detection

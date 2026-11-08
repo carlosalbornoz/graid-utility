@@ -323,43 +323,17 @@ struct SpinningSymbol: View {
     }
 }
 
-/// Dots travelling from the source drive to the receiving one, along a short track.
-struct RebuildFlow: View {
-    var leftToRight = true
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
-            let t = reduceMotion ? 0.5 : (context.date.timeIntervalSinceReferenceDate / 1.8).truncatingRemainder(dividingBy: 1)
-            GeometryReader { g in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.secondary.opacity(0.2)).frame(height: 2)
-                    ForEach(0..<(reduceMotion ? 1 : 2), id: \.self) { i in
-                        let p = (t + Double(i) / 2).truncatingRemainder(dividingBy: 1)
-                        let x = (leftToRight ? p : 1 - p) * (g.size.width - 4)
-                        Circle().fill(brandBlue).frame(width: 4, height: 4)
-                            .opacity(reduceMotion ? 1 : sin(p * .pi))
-                            .offset(x: x)
-                    }
-                }
-                .frame(maxHeight: .infinity)
-            }
-        }
-        .frame(height: 10)
-        .accessibilityHidden(true)
-    }
-}
-
-/// "42 %", or "0.6 %" early on so the first minutes visibly move.
+/// "42%", or "0.5%" early on so the first minutes visibly move. Rounded down, so it never shows
+/// 100% before the copy has finished.
 func percentText(_ f: Double) -> String {
-    let p = f * 100
-    return p < 10 ? String(format: "%.1f %%", p) : String(format: "%.0f %%", p.rounded(.down))
+    f.formatted(.percent.precision(.fractionLength(f < 0.1 ? 1 : 0)).rounded(rule: .down))
 }
 
-/// "about 8 hours", "about 40 minutes".
+/// "5 hours", "40 minutes": the largest unit only, rounded. Callers add "about".
 func durationText(_ t: TimeInterval) -> String {
-    let hours = t / 3600
-    if hours >= 1.5 { return "\(Int(hours.rounded())) hours" }
-    if hours >= 0.75 { return "1 hour" }
-    return "\(max(1, Int((t / 60).rounded()))) minutes"
+    let f = DateComponentsFormatter()
+    f.unitsStyle = .full
+    f.maximumUnitCount = 1
+    f.allowedUnits = [.hour, .minute]
+    return f.string(from: max(60, t)) ?? ""
 }

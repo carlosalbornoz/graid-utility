@@ -421,8 +421,11 @@ struct DiskStatus {
     }
 }
 
+/// "717.8 GB", "4 TB": decimal units as Finder shows them, in the Mac's language and region.
 func formatBytes(_ b: Double) -> String {
-    b >= 1e12 ? String(format: "%.2f TB", b / 1e12) : String(format: "%.1f GB", b / 1e9)
+    // Clamped first: Int64(_:) traps on NaN, infinity or anything past Int64.max.
+    let clamped = b.isFinite ? min(max(0, b), Double(Int64.max / 2)) : 0
+    return Int64(clamped).formatted(.byteCount(style: .file))
 }
 
 // MARK: - Disk discovery
@@ -669,7 +672,7 @@ func selfTest() -> Bool {
     let sp = rebuildSpeed(last: (t1, 0), now: (t1.addingTimeInterval(10), 3_183_594), previous: nil)
     check("rebuild speed: 163 MB/s from two readings", sp.map { abs($0 / 1e6 - 163) < 0.5 } ?? false)
     check("rebuild speed: smoothed", rebuildSpeed(last: (t1, 0), now: (t1.addingTimeInterval(10), 0), previous: 150e6) == 150e6)
-    check("rebuild speed text", speedText(163.4e6) == "163 MB/s")
+    check("rebuild speed text", speedText(163.4e6).hasPrefix("163") && speedText(163.4e6).hasSuffix("/s"))
 
     // --- Manual rebuild ---
     func rebuildSnap(mode: UInt8 = 2, vol: UInt8 = 1, ports: [UInt8]) -> (caps: Capabilities, raid: RaidStatus, disks: DiskStatus) {
@@ -1067,8 +1070,11 @@ func rebuildSpeed(last: (date: Date, position: UInt64), now: (date: Date, positi
     return previous * 0.7 + instant * 0.3
 }
 
-/// "163 MB/s".
-func speedText(_ bytesPerSecond: Double) -> String { String(format: "%.0f MB/s", bytesPerSecond / 1e6) }
+/// "163 MB/s", in the Mac's language and region.
+func speedText(_ bytesPerSecond: Double) -> String {
+    Measurement(value: bytesPerSecond / 1e6, unit: UnitInformationStorage.megabytes)
+        .formatted(.measurement(width: .abbreviated, usage: .asProvided, numberFormatStyle: .number.precision(.fractionLength(0)))) + "/s"
+}
 
 /// The RAM bytes that decide RAID 1 membership and sync (FIRMWARE.md "Tracing the rollback").
 struct RAMField { let name: String; let addresses: [UInt16] }

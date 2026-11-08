@@ -8,6 +8,7 @@
 // the same layout with standard materials.
 
 import AppKit
+import Charts
 import SwiftUI
 
 enum MainTab: String, CaseIterable, Identifiable {
@@ -130,22 +131,6 @@ struct StatusDot: View {
     }
 }
 
-struct Meter: View {
-    let fraction: Double
-    var color: Color = brandBlue
-    var height: CGFloat = 6
-    var body: some View {
-        GeometryReader { g in
-            ZStack(alignment: .leading) {
-                Capsule().fill(.quaternary)
-                Capsule().fill(color).frame(width: max(height, g.size.width * min(1, max(0, fraction))))
-            }
-        }
-        .frame(height: height)
-        .accessibilityValue("\(Int((fraction * 100).rounded())) percent")
-    }
-}
-
 // MARK: - Window
 
 struct ContentView: View {
@@ -241,7 +226,7 @@ struct MainToolbar: ToolbarContent {
                 } else {
                     switch model.userRefresh {
                     case .running:
-                        Label { Text("Refreshing") } icon: { SpinningSymbol(name: "arrow.clockwise", spinning: true) }
+                        Label { Text("Refreshing") } icon: { ProgressView().controlSize(.small).frame(width: 16, height: 16) }
                     case .done:
                         Label { Text("Refreshed") } icon: { Image(systemName: "checkmark").foregroundStyle(.green) }
                             .transition(.opacity)
@@ -377,7 +362,9 @@ struct OverviewPanel: View {
                             Button { NSWorkspace.shared.activateFileViewerSelecting([v.url]) } label: { Image(systemName: "folder") }
                                 .buttonStyle(.borderless).help("Show in Finder")
                         }
-                        Meter(fraction: v.total > 0 ? v.used / v.total : 0)
+                        Gauge(value: v.total > 0 ? min(1, v.used / v.total) : 0) { EmptyView() }
+                            .gaugeStyle(.linearCapacity).tint(brandBlue)
+                            .accessibilityLabel("Space used")
                         Text("\(formatBytes(v.used)) used of \(formatBytes(v.total))").font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -607,7 +594,7 @@ struct DriveBays: View {
                 ForEach(Array(rows.enumerated()), id: \.element.0) { i, slot in
                     DriveBay(unit: unit, bay: slot.0, port: slot.1,
                              lastSeen: model.lastSeenDrive(unit: unit.id, bay: slot.0))
-                    if i < rows.count - 1 { gap(above: slot.0, below: rows[i + 1].0) }
+                    if i < rows.count - 1 { Spacer().frame(height: 12) }
                 }
             }
             .padding(16)
@@ -615,15 +602,6 @@ struct DriveBays: View {
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// The space between two bays; while one copies onto the other, the data flows through it.
-    @ViewBuilder private func gap(above: Int, below: Int) -> some View {
-        if case .copying(let b?)? = unit.replaceStep, [above, below].contains(b) {
-            VerticalFlow(upward: b == above).frame(height: 18).frame(maxWidth: .infinity)
-        } else {
-            Color.clear.frame(height: 12)
-        }
     }
 
     /// Top to bottom: the highest bay first.
@@ -1293,67 +1271,41 @@ struct ActivityTab: View {
 /// scale directly under the plot. The scale grows in 100 MB/s steps to fit the faster result.
 struct SpeedChart: View {
     let rows: [(String, Double)]
-    private let labelWidth: CGFloat = 44
-    private let valueWidth: CGFloat = 76
-    private let barHeight: CGFloat = 10
-    private let rowHeight: CGFloat = 22
-    private let rowSpacing: CGFloat = 6
     private var scaleMax: Double { max(400, ((rows.map(\.1).max() ?? 0) / 100).rounded(.up) * 100) }
     private var ticks: [Double] { stride(from: 0, through: scaleMax, by: scaleMax / 4).map { $0 } }
 
+    private let rowHeight: CGFloat = 28
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: rowSpacing) {
-                    ForEach(rows, id: \.0) { r in
-                        Text(r.0).font(.callout).foregroundStyle(.secondary).frame(height: rowHeight)
-                    }
+        // Row names in their own column, sized to the plot's rows, so they never overlap the bars.
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(rows, id: \.0) { r in
+                    Text(r.0).font(.callout).foregroundStyle(.secondary).frame(height: rowHeight)
                 }
-                .frame(width: labelWidth, alignment: .leading)
-                plot
-                VStack(alignment: .trailing, spacing: rowSpacing) {
-                    ForEach(rows, id: \.0) { r in
-                        Text("\(Int(r.1.rounded())) MB/s").font(.callout.weight(.semibold)).monospacedDigit()
-                            .frame(height: rowHeight)
-                    }
-                }
-                .frame(width: valueWidth, alignment: .trailing)
-            }
-            HStack(spacing: 12) {
-                Color.clear.frame(width: labelWidth, height: 1)
-                GeometryReader { g in
-                    ForEach(ticks, id: \.self) { t in
-                        Text("\(Int(t))").font(.caption2).monospacedDigit().foregroundStyle(.tertiary)
-                            .fixedSize()
-                            .position(x: g.size.width * t / scaleMax, y: 6)
-                    }
-                }
-                .frame(height: 12)
-                Text("MB/s").font(.caption2).foregroundStyle(.tertiary).frame(width: valueWidth, alignment: .trailing)
             }
             .accessibilityHidden(true)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(rows.map { "\($0.0): \(Int($0.1.rounded())) megabytes per second" }.joined(separator: ", "))
-    }
-
-    private var plot: some View {
-        let height = CGFloat(rows.count) * rowHeight + CGFloat(max(0, rows.count - 1)) * rowSpacing
-        return GeometryReader { g in
-            ZStack(alignment: .topLeading) {
-                ForEach(ticks, id: \.self) { t in
-                    Rectangle().fill(Color(nsColor: .separatorColor))
-                        .frame(width: 1, height: height)
-                        .offset(x: min(g.size.width - 1, g.size.width * t / scaleMax))
-                }
-                ForEach(Array(rows.enumerated()), id: \.offset) { i, r in
-                    RoundedRectangle(cornerRadius: 3, style: .continuous).fill(brandBlue)
-                        .frame(width: max(barHeight, g.size.width * min(1, r.1 / scaleMax)), height: barHeight)
-                        .offset(y: CGFloat(i) * (rowHeight + rowSpacing) + (rowHeight - barHeight) / 2)
+            Chart(rows, id: \.0) { r in
+                BarMark(x: .value("MB/s", min(r.1, scaleMax)), y: .value("Test", r.0), height: .fixed(10))
+                    .foregroundStyle(brandBlue)
+                    .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                    .annotation(position: .trailing, spacing: 6) {
+                        Text(speedText(r.1 * 1e6)).font(.callout.weight(.semibold)).monospacedDigit().fixedSize()
+                    }
+                    .accessibilityLabel(r.0)
+                    .accessibilityValue(speedText(r.1 * 1e6))
+            }
+            .chartXScale(domain: 0...scaleMax)
+            .chartXAxis {
+                AxisMarks(values: ticks) { v in
+                    AxisGridLine()
+                    AxisValueLabel(anchor: v.index == ticks.count - 1 ? .topTrailing : .top)
                 }
             }
+            .chartYAxis(.hidden)
+            .chartPlotStyle { $0.frame(height: rowHeight * CGFloat(rows.count)) }
+            .padding(.trailing, 76)   // room for the value beside the longest bar
         }
-        .frame(height: height)
     }
 }
 
@@ -1484,32 +1436,5 @@ struct NoticeBar: View {
         .padding(.vertical, 10)
         .background(Color(nsColor: .controlBackgroundColor))
         .accessibilityElement(children: .contain)
-    }
-}
-
-/// Dots travelling between two stacked bays, from the drive that's kept to the receiving one.
-struct VerticalFlow: View {
-    let upward: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
-            let t = reduceMotion ? 0.5 : (context.date.timeIntervalSinceReferenceDate / 1.6).truncatingRemainder(dividingBy: 1)
-            GeometryReader { g in
-                ZStack(alignment: .top) {
-                    Capsule().fill(Color.secondary.opacity(0.2)).frame(width: 2)
-                    ForEach(0..<(reduceMotion ? 1 : 2), id: \.self) { i in
-                        let p = (t + Double(i) / 2).truncatingRemainder(dividingBy: 1)
-                        let y = (upward ? 1 - p : p) * (g.size.height - 4)
-                        Circle().fill(brandBlue).frame(width: 4, height: 4)
-                            .opacity(reduceMotion ? 1 : sin(p * .pi))
-                            .offset(y: y)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            }
-        }
-        .frame(width: 10)
-        .accessibilityHidden(true)
     }
 }

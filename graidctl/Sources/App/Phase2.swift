@@ -1,4 +1,5 @@
 import AppKit
+import Charts
 import DiskArbitration
 import Foundation
 import SwiftUI
@@ -419,49 +420,39 @@ struct SpeedLane: View {
         }
     }
 
+    /// The speed at each point of the file as a stepped area: each sample holds from the previous
+    /// position to its own. A thin rule marks the average once known, and the leading edge while running.
+    private var points: [SpeedSample] {
+        guard let first = samples.first else { return [] }
+        return [SpeedSample(at: 0, mbps: first.mbps)] + samples.map { SpeedSample(at: min(1, $0.at), mbps: min(scale, $0.mbps)) }
+    }
+
     private var track: some View {
-        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
-        return GeometryReader { g in
-            let w = g.size.width, h = g.size.height
-            ZStack(alignment: .bottomLeading) {
-                shape.fill(.quaternary.opacity(0.6))
-                SpeedTrace(samples: samples, scale: scale)
-                    .fill(brandBlue.opacity(active || average != nil ? 1 : 0.5))
-                    .clipShape(shape)
-                if let a = average {
-                    // The average as a hairline across the trace.
-                    let y = h * (1 - min(1, a / scale))
-                    Rectangle().fill(Color.primary.opacity(0.55))
-                        .frame(width: w, height: 1)
-                        .offset(y: -(h - y))
-                }
-                if active {
-                    // Leading edge: where the file is up to.
-                    Rectangle().fill(brandBlue).frame(width: 2, height: h).offset(x: max(0, w * progress - 1))
-                }
+        Chart {
+            ForEach(Array(points.enumerated()), id: \.offset) { _, s in
+                AreaMark(x: .value("Position", s.at), y: .value("MB/s", s.mbps))
+                    .interpolationMethod(.stepStart)
+                    .foregroundStyle(brandBlue.opacity(active || average != nil ? 1 : 0.5))
             }
+            if let a = average {
+                RuleMark(y: .value("Average", min(scale, a)))
+                    .foregroundStyle(Color.primary.opacity(0.55))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+            }
+            if active {
+                RuleMark(x: .value("Position", progress))
+                    .foregroundStyle(brandBlue)
+                    .lineStyle(StrokeStyle(lineWidth: 2))
+            }
+        }
+        .chartXScale(domain: 0...1)
+        .chartYScale(domain: 0...scale)
+        .chartXAxis(.hidden)
+        .chartYAxis {
+            AxisMarks(values: [scale / 2, scale]) { _ in AxisGridLine() }
         }
         .frame(height: trackHeight)
         .animation(.easeOut(duration: 0.25), value: samples.count)
-    }
-}
-
-/// The speed samples as a stepped area: each sample spans from the previous position in the
-/// file to its own, at a height proportional to its speed.
-struct SpeedTrace: Shape {
-    let samples: [SpeedSample]
-    let scale: Double
-    func path(in r: CGRect) -> Path {
-        var p = Path()
-        var x0 = 0.0
-        for s in samples {
-            let x1 = min(1, s.at)
-            let height = r.height * min(1, s.mbps / scale)
-            p.addRect(CGRect(x: r.minX + r.width * x0, y: r.maxY - height,
-                             width: max(0.5, r.width * (x1 - x0)), height: height))
-            x0 = x1
-        }
-        return p
     }
 }
 
