@@ -14,17 +14,25 @@ enum Pref {
     static let notifyConfig = "notifyConfig"
     static let letDrivesSleep = "letDrivesSleep"
     static let systemReadOnly = "mountSystemPartitionsReadOnly"
+    static let checkUpdates = "checkForUpdates"
+    static let prereleases = "includePrereleases"
+    static let lastUpdateCheck = "lastUpdateCheck"
+    static let skippedReleaseKey = "skippedRelease"
 
     static func register() {
         UserDefaults.standard.register(defaults: [
             monitorEnabled: false, notifyDisk: true, notifyArray: true, notifyConnection: false, notifyConfig: false,
-            letDrivesSleep: true, systemReadOnly: true,
+            letDrivesSleep: true, systemReadOnly: true, checkUpdates: true, prereleases: false,
         ])
     }
     static var monitor: Bool { UserDefaults.standard.bool(forKey: monitorEnabled) }
     static var drivesMaySleep: Bool { UserDefaults.standard.bool(forKey: letDrivesSleep) }
     /// EFI and other system partitions mount read-only unless the user turns this off.
     static var mountSystemReadOnly: Bool { UserDefaults.standard.bool(forKey: systemReadOnly) }
+    static var checkForUpdates: Bool { UserDefaults.standard.bool(forKey: checkUpdates) }
+    static var includePrereleases: Bool { UserDefaults.standard.bool(forKey: prereleases) }
+    /// The release tag the user chose to skip; automatic checks don't show it again.
+    static var skippedRelease: String? { UserDefaults.standard.string(forKey: skippedReleaseKey) }
 }
 
 // MARK: - Running a command and reading its output

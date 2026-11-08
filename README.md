@@ -54,5 +54,6 @@ commands are deliberately not implemented.
 ## Not affiliated
 
 Not affiliated with or endorsed by G-Technology or Western Digital. "G-Technology", "G-RAID"
-and related names are their trademarks. Their artwork isn't included; see
+and related names are their trademarks. Their artwork (the enclosure picture and the app icon)
+isn't in this repository, but the release downloads include it; see
 [graidctl/Resources/README.md](graidctl/Resources/README.md).

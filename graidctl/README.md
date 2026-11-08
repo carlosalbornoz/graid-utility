@@ -164,12 +164,18 @@ from cable-in to disk-back, the same after an eject or an unmount.
 
 - **Firmware flashing.** A mistake can brick the controller. Use the original app under
   Rosetta if you ever need it.
-- Update checks. The old G-Technology update URLs are gone.
 
 ## Artwork
 
-The icon and status images in `Resources/` come from Western Digital's Configurator.
-They're fine for your own copy, but don't redistribute the app with them.
+The enclosure picture and app icon in `Resources/` are G-Technology's. They aren't in the
+repository; `tools/release.sh` adds them to the app in the release downloads.
+
+## Updates
+
+Once a day the app asks GitHub whether a newer release has been published, and shows a bar at
+the top of the window if so. **G-RAID Utility → Check for Updates…** checks right away. Settings
+→ Updates turns the daily check off, or includes pre-releases. It only reads the public release
+list; nothing about your Mac or G-RAID is sent. You install the new version yourself.
 
 ## First test on real hardware
 

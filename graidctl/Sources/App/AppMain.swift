@@ -61,6 +61,7 @@ struct GRAIDUtilityApp: App {
                 Divider()
             }
             HistoryCommand()
+            UpdateCommands()
         }
 
         Window("Event History", id: "history") {
@@ -97,7 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Task { @MainActor in AppModel.shared.start() }
+        Task { @MainActor in
+            AppModel.shared.start()
+            UpdateChecker.shared.start()
+        }
     }
 
     /// With background monitoring on, closing the window keeps the app running in the menu bar.

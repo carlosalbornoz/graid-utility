@@ -1,6 +1,7 @@
 # Resources
 
-Two pictures are G-Technology's artwork, so they aren't in this repository:
+Two pictures are G-Technology's artwork. They aren't in this repository, but `tools/release.sh`
+bundles them into the app in the release downloads:
 
 - **Img_Device_GRAID.png**, the enclosure picture, from G-Technology's public icon pack. Western
   Digital publishes it in [How to change drive icons on macOS for SanDisk Professional and

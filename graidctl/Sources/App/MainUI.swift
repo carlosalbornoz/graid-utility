@@ -135,9 +135,15 @@ struct StatusDot: View {
 
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
+    @ObservedObject var updates = UpdateChecker.shared
 
     var body: some View {
         VStack(spacing: 0) {
+            // Device messages come first: they're about what just happened.
+            if let release = updates.available, model.message == nil {
+                UpdateBar(release: release)
+                Divider()
+            }
             if let notice = model.message {
                 NoticeBar(notice: notice,
                           action: model.suggestDiskUtility ? ("Open Disk Utility", { openDiskUtility() }) : nil,

@@ -740,6 +740,28 @@ func selfTest() -> Bool {
     check("drive size: 500 GB and 12 TB", driveSizeText(500.1e9) == "500 GB" && driveSizeText(12.0004e12) == "12 TB")
     check("diff: disconnect only when confirmed", diffSnapshots(old: base, new: [:], confirmedGone: []).isEmpty
           && diffSnapshots(old: base, new: [:], confirmedGone: ["u"]).first?.title == "Disconnected")
+
+    // Release check
+    let v = { (s: String) in AppVersion(s)! }
+    check("version: v-prefix and trailing zeros", v("v2.1") == v("2.1.0") && v("V2") == v("2.0"))
+    check("version: numeric, not text, order", v("2.10") > v("2.9") && v("2.0.1") > v("2.0"))
+    check("version: suffix ignored, junk rejected", v("2.1-beta") == v("2.1") && AppVersion("latest") == nil && AppVersion("2..1") == nil)
+    let releasesJSON = """
+    [{"tag_name":"v2.2","name":"G-RAID Utility 2.2","body":"## What's new\\n\\n**Back up first.** Adds [update checks](https://x) and `graidctl rebuild`.","html_url":"https://github.com/a/b/releases/tag/v2.2","prerelease":true,"draft":false,"published_at":"2026-12-01T10:00:00Z","assets":[{"name":"graidctl-2.2-macos.zip","browser_download_url":"https://x/c.zip"},{"name":"G-RAID-Utility-2.2.zip","browser_download_url":"https://x/a.zip"}]},
+     {"tag_name":"v2.1","name":null,"body":null,"html_url":"https://github.com/a/b/releases/tag/v2.1","prerelease":false,"draft":false,"published_at":"2026-11-20T10:00:00Z","assets":[]},
+     {"tag_name":"v3.0","name":"draft","body":"","html_url":"https://github.com/a/b/releases/tag/v3.0","prerelease":false,"draft":true,"published_at":null,"assets":[]},
+     {"tag_name":"nightly","name":"n","body":"","html_url":"https://github.com/a/b/releases/tag/nightly","prerelease":false,"draft":false,"published_at":null,"assets":[]}]
+    """
+    let rels = (try? decodeReleases(Data(releasesJSON.utf8))) ?? []
+    check("releases: decode GitHub's list", rels.count == 4 && rels[0].published != nil && rels[1].notes == nil)
+    check("releases: newest full release, drafts skipped", newerRelease(than: v("2.0"), in: rels, includePrereleases: false)?.tag == "v2.1")
+    check("releases: pre-releases when asked", newerRelease(than: v("2.0"), in: rels, includePrereleases: true)?.tag == "v2.2")
+    check("releases: nothing when up to date", newerRelease(than: v("2.2"), in: rels, includePrereleases: true) == nil)
+    check("releases: app zip preferred, else the page", rels[0].downloadURL.absoluteString == "https://x/a.zip"
+          && rels[1].downloadURL == rels[1].page)
+    check("releases: summary skips headings and strips Markdown",
+          releaseSummary(rels[0].notes) == "Back up first. Adds update checks and graidctl rebuild.")
+    check("releases: summary cut at a word", releaseSummary(String(repeating: "word ", count: 60), limit: 20) == "word word word word…")
     return ok
 }
 

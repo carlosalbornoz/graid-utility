@@ -224,5 +224,11 @@ struct RenderPreviews {
         let problem = AppModel(); problem.units = [sampleUnit(rebuilding: false)]; problem.phase = .ready
         problem.message = Notice(.problem, "The G-RAID couldn't be ejected", "It's in use by Finder. Quit or close files there and try again.")
         render("notice-problem", problem)
+        let upd = AppModel(); upd.units = [sampleUnit(rebuilding: false)]; upd.phase = .ready
+        UpdateChecker.shared.available = ReleaseInfo(tag: "v2.1", name: nil,
+            notes: "## What's new\n\nShows rebuild progress on the drive itself, with time left and speed.",
+            page: releasesPage, prerelease: false, draft: false, published: nil, assets: [])
+        render("update-available", upd)
+        UpdateChecker.shared.available = nil
     }
 }
