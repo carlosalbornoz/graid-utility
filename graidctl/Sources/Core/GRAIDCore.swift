@@ -70,6 +70,29 @@ func diskStatusText(_ s: UInt8) -> String {
     return "Unknown (\(hex(s)))"
 }
 
+/// The name shown in the app. The controller's "Blank" means "not part of the array", not
+/// "empty" (in the 2026-11-08 test the Blank drive held the newest data), and "Rejected" is the
+/// few seconds it spends checking a returning drive. The controller's own terms stay in the CLI
+/// and the health report.
+func diskStatusDisplay(_ s: UInt8) -> String {
+    switch s {
+    case 4: return "Not in use"
+    case 6: return "Checking"
+    default: return diskStatusText(s)
+    }
+}
+
+/// One sentence for the states whose name alone could mislead, or nil.
+func diskStatusExplanation(_ s: UInt8, degradedRAID1: Bool) -> String? {
+    switch s {
+    case 4: return degradedRAID1
+        ? "The G-RAID isn't using this drive. Its contents haven't been erased, and it may hold changes the other drive doesn't have."
+        : "The G-RAID isn't using this drive. Its contents haven't been erased."
+    case 6: return "The G-RAID is checking this drive. It's re-admitted if it missed no changes while it was out."
+    default: return nil
+    }
+}
+
 func vhddReasonText(_ r: UInt8) -> String {
     switch r {
     case 0x00: return "No ATA Disk connected"
@@ -122,6 +145,14 @@ struct Command {
         let block = UInt16(address >> 7)
         return Command(control: [0x00, 0x04, 0xEF, 0xFF], command: [0x20, select, UInt8(block >> 8), UInt8(block & 0xFF)],
                        replyLength: 0x80, timeout: 2)
+    }
+    /// Read one byte of controller RAM (GetRegister, opcode 0x50; the old app used it for the
+    /// firmware version). Only RAM below 0xE000 is allowed: the hardware registers from 0xE000 up
+    /// can have side effects when read. The write variant (0x51) is deliberately not implemented.
+    static func getRegister(address: UInt16) -> Command {
+        precondition(address < ramLimit, "GetRegister is limited to controller RAM below 0xE000")
+        return Command(control: [0x00, 0x04, 0x00, 0x00], command: [0x50, 0xCF, UInt8(address >> 8), UInt8(address & 0xFF)],
+                       replyLength: 1, timeout: 1.5)
     }
     static func modeChange(payload: [UInt8]) -> Command {
         precondition(payload.count == 128)
@@ -591,6 +622,20 @@ func selfTest() -> Bool {
     let ind = unitNames([(id: "68ca4ea78d27834a", arrayName: "", product: "G-RAID with Thunderbolt"),
                          (id: "1122334455667788", arrayName: "Backup", product: "G-RAID with Thunderbolt")])
     check("names: Individual mode uses the product name", ind["68ca4ea78d27834a"] == "G-RAID with Thunderbolt" && ind["1122334455667788"] == "Backup")
+    check("replace: a returning drive is being checked", computeReplaceStep(mode: 2, volumeStatus: 1, bays: [6, 0]) == .checking(bay: 0))
+    check("replace: a set-aside drive needs a manual rebuild", computeReplaceStep(mode: 2, volumeStatus: 1, bays: [0, 4]) == .needsRebuild(bay: 1))
+    check("names: Blank is shown as Not in use", diskStatusDisplay(4) == "Not in use" && diskStatusText(4) == "Blank")
+    do {
+        var d = ControllerSimulator.capturedDisks
+        d[4] = 0; d[4 + 76] = 4          // bay 1 Online, bay 2 Blank
+        let ds = DiskStatus(raw: d)
+        let active = soleActiveMember(mode: 2, volumeStatus: 1, disks: ds)
+        let serials = ds.presentPorts.map(\.serial)
+        check("swap: the sole Online member is found", active?.bay == 0 && active?.serial == serials[0])
+        check("swap: running on another drive while the old one is set aside", isMemberSwap(previousSerial: serials[1], now: active, disks: ds))
+        check("swap: same drive is no swap", !isMemberSwap(previousSerial: serials[0], now: active, disks: ds))
+        check("swap: no sole member while both are Online", soleActiveMember(mode: 2, volumeStatus: 0, disks: DiskStatus(raw: ControllerSimulator.capturedDisks)) == nil)
+    }
     check("replace: missing copy asks for a drive", computeReplaceStep(mode: 2, volumeStatus: 1, bays: [0, nil]) == .insert(bay: 1))
     check("replace: failed drive must come out first", computeReplaceStep(mode: 2, volumeStatus: 1, bays: [8, 0]) == .remove(bay: 0))
     check("replace: a foreign drive waits for the copy", computeReplaceStep(mode: 2, volumeStatus: 1, bays: [0, 5]) == .waiting(bay: 1))
@@ -598,6 +643,34 @@ func selfTest() -> Bool {
     check("replace: paused and failed", computeReplaceStep(mode: 2, volumeStatus: 8, bays: [0, 0x11]) == .paused(bay: 1) && computeReplaceStep(mode: 2, volumeStatus: 3, bays: [0, 0]) == .failed(bay: nil))
     check("replace: nothing to do when online", computeReplaceStep(mode: 2, volumeStatus: 0, bays: [0, 0]) == nil)
     check("replace: no guide when no copy survives", computeReplaceStep(mode: 2, volumeStatus: 0x11, bays: [8, nil]) == nil)
+    // --- RAM reads (GetRegister) ---
+    let gr = Command.getRegister(address: 0x060B)
+    check("getRegister packet", gr.control == [0x00, 0x04, 0x00, 0x00] && gr.command == [0x50, 0xCF, 0x06, 0x0B] && gr.replyLength == 1)
+    let ramSim = ControllerSimulator()
+    let ramDev = Device(simulator: ramSim)
+    let ram = try? readRAM(dev: ramDev, addresses: [0x04BF, 0x060B, 0x0629])
+    check("readRAM: simulator degraded on port 0", ram?[0x04BF] == 1 && ram?[0x060B] == 0x01 && ram?[0x0629] == 2)
+    let sentBefore = ramSim.executedOpcodes.filter { $0 == 0x50 }.count
+    let refused: Bool = { do { _ = try readRAM(dev: ramDev, addresses: [0x060B, 0xE000]); return false } catch { return true } }()
+    check("readRAM: hardware registers refused before anything is sent", refused && ramSim.executedOpcodes.filter { $0 == 0x50 }.count == sentBefore)
+    check("readRAM: watch list is RAM only", raid1WatchFields.allSatisfy { $0.addresses.allSatisfy { $0 < ramLimit } })
+
+    // --- Rebuild position (live bytes from 2026-11-08) ---
+    let pos = decodeRebuildPosition([0x02, 0x8f, 0xcb, 0x00, 0, 0, 0, 0, 0xd1, 0xbf, 0x00, 0x00, 0, 0, 0, 0x01])
+    check("rebuild position: live bytes decode", pos?.position == 42_978_048 && pos?.end == 7_813_922_816)
+    check("rebuild position: fraction", abs((pos?.fraction ?? 0) - 0.0055) < 0.0001)
+    check("rebuild position: garbage rejected", decodeRebuildPosition([UInt8](repeating: 0xFF, count: 8) + [0, 0, 0, 1, 0, 0, 0, 0]) == nil)
+    let t0 = Date(timeIntervalSince1970: 0)
+    let left = rebuildTimeLeft(first: (t0, 0), now: (t0.addingTimeInterval(600), 600 * 270_000), end: 7_813_922_816)
+    check("rebuild time left: ~7.9 h at 138 MB/s", left.map { abs($0 / 3600 - 7.87) < 0.05 } ?? false)
+    check("rebuild time left: needs a minute of movement", rebuildTimeLeft(first: (t0, 0), now: (t0.addingTimeInterval(30), 1000), end: 2000) == nil)
+
+    let t1 = Date(timeIntervalSince1970: 0)
+    let sp = rebuildSpeed(last: (t1, 0), now: (t1.addingTimeInterval(10), 3_183_594), previous: nil)
+    check("rebuild speed: 163 MB/s from two readings", sp.map { abs($0 / 1e6 - 163) < 0.5 } ?? false)
+    check("rebuild speed: smoothed", rebuildSpeed(last: (t1, 0), now: (t1.addingTimeInterval(10), 0), previous: 150e6) == 150e6)
+    check("rebuild speed text", speedText(163.4e6) == "163 MB/s")
+
     // --- Manual rebuild ---
     func rebuildSnap(mode: UInt8 = 2, vol: UInt8 = 1, ports: [UInt8]) -> (caps: Capabilities, raid: RaidStatus, disks: DiskStatus) {
         var c = ControllerSimulator.capturedCaps; c[36] = mode
@@ -751,16 +824,18 @@ func unitNames(_ units: [(id: String, arrayName: String, product: String)]) -> [
 /// starts the copy by itself as soon as a drive goes into the empty bay of a degraded RAID 1,
 /// even a drive that isn't a member (FIRMWARE.md "Rebuild"), so the app only guides and watches.
 enum ReplaceStep: Equatable {
-    case remove(bay: Int)     // a failed or rejected drive is still in the bay
+    case remove(bay: Int)     // a failed drive is still in the bay
     case insert(bay: Int)     // the bay is empty, or its drive stopped answering
-    case waiting(bay: Int)    // a drive is in, but the copy hasn't started
+    case checking(bay: Int)   // a returning drive, being checked (Rejected, ~15 s)
+    case waiting(bay: Int)    // a new drive is in; the copy should start by itself
+    case needsRebuild(bay: Int) // a drive the G-RAID set aside (Blank): only a manual rebuild copies onto it
     case copying(bay: Int?)
     case paused(bay: Int?)
     case failed(bay: Int?)
 
     var bay: Int? {
         switch self {
-        case .remove(let b), .insert(let b), .waiting(let b): return b
+        case .remove(let b), .insert(let b), .checking(let b), .waiting(let b), .needsRebuild(let b): return b
         case .copying(let b), .paused(let b), .failed(let b): return b
         }
     }
@@ -779,10 +854,31 @@ func computeReplaceStep(mode: UInt8, volumeStatus: UInt8, bays: [UInt8?]) -> Rep
     }
     if let b = receiving { return bays[b] == 0x11 ? .paused(bay: b) : .copying(bay: b) }
     guard volumeStatus == 1 else { return nil }
-    if let b = bays.firstIndex(where: { $0 == 6 || $0 == 8 }) { return .remove(bay: b) }
+    if let b = bays.firstIndex(where: { $0 == 8 }) { return .remove(bay: b) }
     if let b = bays.firstIndex(where: { $0 == nil || $0 == 3 }) { return .insert(bay: b) }
-    if let b = bays.firstIndex(where: { $0 == 4 || $0 == 5 || $0 == 9 || $0 == 0xA }) { return .waiting(bay: b) }
+    if let b = bays.firstIndex(where: { $0 == 6 }) { return .checking(bay: b) }
+    // A drive from elsewhere (ID Mismatch) starts the copy by itself (0x636A); a Blank, Spare or
+    // non-participating drive doesn't, even when reinserted (seen on hardware 2026-11-08).
+    if let b = bays.firstIndex(where: { $0 == 5 }) { return .waiting(bay: b) }
+    if let b = bays.firstIndex(where: { $0 == 4 || $0 == 9 || $0 == 0xA }) { return .needsRebuild(bay: b) }
     return nil
+}
+
+/// Which drive a RAID 1 is running on, by serial: the only Online member while it's degraded.
+/// Nil when that isn't a single drive (both Online, rebuilding, or not RAID 1).
+func soleActiveMember(mode: UInt8, volumeStatus: UInt8, disks: DiskStatus) -> (bay: Int, serial: String)? {
+    guard mode == 2, volumeStatus == 1 else { return nil }
+    let online = disks.presentPorts.filter { $0.status == 0 }
+    guard online.count == 1, let p = online.first, !p.serial.isEmpty else { return nil }
+    return (p.index, p.serial)
+}
+
+/// A swap: the array was running on one drive and is now running on another, without a rebuild
+/// in between, while the earlier drive is still present but set aside. On 2026-11-08 the
+/// controller did this by itself and the writes made in the meantime were lost.
+func isMemberSwap(previousSerial: String?, now: (bay: Int, serial: String)?, disks: DiskStatus) -> Bool {
+    guard let prev = previousSerial, let now, now.serial != prev else { return false }
+    return disks.presentPorts.contains { $0.serial == prev && [4, 6, 0xA].contains($0.status) }
 }
 
 /// The smallest drive, in blocks, that can take a RAID 1 member's place: the controller reserves
@@ -904,6 +1000,105 @@ func rebuildPayload(source: Int, name: String, disks: DiskStatus) -> [UInt8] {
     p[0x1C] = UInt8(source)
     p[0x1D] = UInt8(1 - source)
     return p
+}
+
+/// Controller RAM ends here; hardware registers start at 0xE000 (FIRMWARE.md).
+let ramLimit: UInt16 = 0xE000
+
+/// Read bytes of controller RAM one GetRegister at a time. Throws before sending anything if
+/// any address is outside RAM.
+func readRAM(dev: Device, addresses: [UInt16]) throws -> [UInt16: UInt8] {
+    if let bad = addresses.first(where: { $0 >= ramLimit }) {
+        throw ToolError(String(format: "0x%04X is a hardware register, not RAM; refusing to read it", bad))
+    }
+    var out: [UInt16: UInt8] = [:]
+    for a in addresses {
+        let (st, reply) = try dev.execute(.getRegister(address: a))
+        guard st == 0x20 || st == 0x00, let b = reply.first else {
+            throw ToolError(String(format: "GetRegister 0x%04X failed: %@ %@", a, hex(st), ackText(st)))
+        }
+        out[a] = b
+    }
+    return out
+}
+
+/// How far a RAID 1 rebuild has got, from controller RAM 0x04AC–0x04BB (FIRMWARE.md "Rebuild",
+/// confirmed live 2026-11-08): position at 0x04AC and end at 0x04B4, each two big-endian dwords
+/// with the low dword first. Only known for firmware 14… (G-RAID with Thunderbolt).
+struct RebuildPosition: Equatable {
+    let position: UInt64
+    let end: UInt64
+    var fraction: Double { end > 0 ? min(1, Double(position) / Double(end)) : 0 }
+}
+
+let rebuildPositionAddresses: [UInt16] = Array(0x04AC...0x04BB)
+
+func decodeRebuildPosition(_ b: [UInt8]) -> RebuildPosition? {
+    guard b.count == 16 else { return nil }
+    func dword(_ i: Int) -> UInt64 { UInt64(b[i]) << 24 | UInt64(b[i + 1]) << 16 | UInt64(b[i + 2]) << 8 | UInt64(b[i + 3]) }
+    let position = dword(4) << 32 | dword(0), end = dword(12) << 32 | dword(8)
+    guard end > 0, position <= end else { return nil }
+    return RebuildPosition(position: position, end: end)
+}
+
+/// Read the rebuild position, or nil when this firmware's layout isn't known or the bytes don't
+/// make sense. Read-only (GetRegister, RAM only).
+func readRebuildPosition(dev: Device, caps: Capabilities) -> RebuildPosition? {
+    guard DeviceModel.identify(caps) == .graidTB2,
+          let ram = try? readRAM(dev: dev, addresses: rebuildPositionAddresses) else { return nil }
+    return decodeRebuildPosition(rebuildPositionAddresses.map { ram[$0] ?? 0 })
+}
+
+/// Time left from two readings of the position, or nil until the copy has visibly moved.
+func rebuildTimeLeft(first: (date: Date, position: UInt64), now: (date: Date, position: UInt64), end: UInt64) -> TimeInterval? {
+    let dt = now.date.timeIntervalSince(first.date), moved = Double(now.position) - Double(first.position)
+    guard dt >= 60, moved > 0, now.position <= end else { return nil }
+    return Double(end - now.position) / (moved / dt)
+}
+
+/// Copy speed in bytes per second between two readings of the rebuild position, smoothed with the
+/// previous speed so one slow or fast interval doesn't jump the number. Nil until readings are at
+/// least 5 seconds apart and the position has moved.
+func rebuildSpeed(last: (date: Date, position: UInt64), now: (date: Date, position: UInt64), previous: Double?) -> Double? {
+    let dt = now.date.timeIntervalSince(last.date)
+    guard dt >= 5, now.position > last.position else { return previous }
+    let instant = Double(now.position - last.position) * 512 / dt
+    guard let previous else { return instant }
+    return previous * 0.7 + instant * 0.3
+}
+
+/// "163 MB/s".
+func speedText(_ bytesPerSecond: Double) -> String { String(format: "%.0f MB/s", bytesPerSecond / 1e6) }
+
+/// The RAM bytes that decide RAID 1 membership and sync (FIRMWARE.md "Tracing the rollback").
+struct RAMField { let name: String; let addresses: [UInt16] }
+let raid1WatchFields: [RAMField] = [
+    RAMField(name: "in_sync(04BF)", addresses: [0x04BF]),
+    RAMField(name: "degraded_base(0629)", addresses: [0x0629]),
+    RAMField(name: "members(060B)", addresses: [0x060B]),
+    RAMField(name: "060C", addresses: [0x060C]),
+    RAMField(name: "060D", addresses: [0x060D]),
+    RAMField(name: "rebuild_mask(060A)", addresses: [0x060A]),
+    RAMField(name: "member_count(0498)", addresses: [0x0498]),
+    RAMField(name: "0499", addresses: [0x0499]),
+    RAMField(name: "049A", addresses: [0x049A]),
+    RAMField(name: "last_port_event(0A08)", addresses: [0x0A08]),
+    RAMField(name: "level(04F0)", addresses: [0x04F0]),
+    RAMField(name: "level(0B5D)", addresses: [0x0B5D]),
+    RAMField(name: "flags(054D-0555)", addresses: Array(0x054D...0x0555)),
+    RAMField(name: "rebuild_pos(04AC-04BB)", addresses: Array(0x04AC...0x04BB)),
+    // Port records (0xC2 bytes each from 0x0000): bytes that differed between the Online and the
+    // Blank port in the first dump (TESTING.md). +0x16 is the leading membership candidate.
+    RAMField(name: "p0+16", addresses: [0x0016]), RAMField(name: "p1+16", addresses: [0x00D8]),
+    RAMField(name: "p0+17", addresses: [0x0017]), RAMField(name: "p1+17", addresses: [0x00D9]),
+    RAMField(name: "p0+4E", addresses: [0x004E]), RAMField(name: "p1+4E", addresses: [0x0110]),
+    RAMField(name: "p0+56", addresses: [0x0056]), RAMField(name: "p1+56", addresses: [0x0118]),
+    RAMField(name: "p0+A0", addresses: [0x00A0, 0x00A1]), RAMField(name: "p1+A0", addresses: [0x0162, 0x0163]),
+]
+
+/// One field's bytes as hex, e.g. "01" or "00 00 01 d1".
+func ramFieldText(_ f: RAMField, _ values: [UInt16: UInt8]) -> String {
+    f.addresses.map { values[$0].map { String(format: "%02x", $0) } ?? "??" }.joined(separator: " ")
 }
 
 func unmountDisk(_ bsd: String) throws {

@@ -8,12 +8,16 @@ struct ReplaceDriveSheet: View {
     let unitID: String
     var previewUnit: Unit? = nil   // used by tests/render_previews.sh
     var previewSince: Date? = nil
+    var previewLeft: TimeInterval? = nil
+    var previewRate: Double? = nil
     let close: () -> Void
 
     final class Memory: ObservableObject {
         @Published var bay: Int?
         @Published var hadRemove = false
         @Published var sawCopy = false
+        @Published var confirmingRebuild = false
+        @Published var checkedFiles = false
     }
     @StateObject private var memory = Memory()
 
@@ -24,19 +28,39 @@ struct ReplaceDriveSheet: View {
     private var phase: Phase {
         switch step {
         case .remove?: return .remove
-        case .insert?, .waiting?: return .insert
+        case .insert?, .waiting?, .checking?, .needsRebuild?: return .insert
         case .copying?, .paused?, .failed?: return .copy
         case nil: return memory.sawCopy ? .done : .insert
         }
     }
     private var target: Int { memory.bay ?? step?.bay ?? 1 }
+
+    /// Named for why the sheet was opened: watching a copy, starting a rebuild, or replacing a drive.
+    private var sheetTitle: String {
+        switch step {
+        case .copying?, .paused?, .failed?: return "Rebuild"
+        case .needsRebuild?: return "Rebuild Bay \(target + 1)"
+        case nil where memory.sawCopy: return "Rebuild"
+        default: return "Replace a Drive"
+        }
+    }
+    private var sheetIntro: String {
+        switch step {
+        case .copying?, .paused?:
+            return "The G-RAID is copying everything from Bay \(source + 1) onto Bay \(target + 1). You can keep using the volume while it copies."
+        case .needsRebuild?:
+            return "Bay \(target + 1) holds a drive the G-RAID isn't using. A rebuild replaces its contents with a copy of Bay \(source + 1)."
+        default:
+            return "The G-RAID copies everything from Bay \(source + 1) onto the new drive in Bay \(target + 1). You can keep using the volume while it copies."
+        }
+    }
     private var source: Int { target == 0 ? 1 : 0 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Replace a Drive").font(.title2.weight(.semibold))
-                Text("The G-RAID copies everything from Bay \(source + 1) onto the new drive in Bay \(target + 1). You can keep using the volume while it copies.")
+                Text(sheetTitle).font(.title2.weight(.semibold))
+                Text(sheetIntro)
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
@@ -90,13 +114,28 @@ struct ReplaceDriveSheet: View {
         let min = unit.map { driveSizeText($0.replacementMinBytes) } ?? ""
         let blocks = unit.map { replacementMinBlocks(volumeBlocks: $0.raid.volume(0).totalBlocks) } ?? 0
         var detail = "Any make or model with at least \(blocks.formatted()) sectors."
-        if case .waiting? = step {
-            detail = "A drive is in, but the copy hasn't started. If nothing changes within a minute, take it out and insert it again."
+        var extra: AnyView? = nil
+        switch step {
+        case .checking?:
+            detail = "The G-RAID is checking the drive. This takes about 15 seconds."
+        case .waiting?:
+            detail = "A drive is in. The copy usually starts by itself within a minute."
+        case .needsRebuild?:
+            detail = "The G-RAID set this drive aside and won't copy onto it by itself. Its contents haven't been erased."
+            extra = AnyView(rebuildPanel)
+        default:
+            break
+        }
+        if case .needsRebuild? = step {
         } else if state(.insert) == .done, let p = unit?.disks.presentPorts.first(where: { $0.index == target }) {
             detail = "\(p.model) · \(p.serial)"
         }
-        return StepRow(number: memory.hadRemove ? 2 : 1, title: "Insert a drive of \(min) or more in Bay \(target + 1)",
-                       detail: detail, state: state(.insert))
+        let title: String = {
+            if case .needsRebuild? = step { return "Rebuild Bay \(target + 1) from Bay \(source + 1)" }
+            if state(.insert) == .done { return "Drive in Bay \(target + 1)" }
+            return "Insert a drive of \(min) or more in Bay \(target + 1)"
+        }()
+        return StepRow(number: memory.hadRemove ? 2 : 1, title: title, detail: detail, state: state(.insert), extra: extra)
     }
 
     private var copyRow: some View {
@@ -105,6 +144,27 @@ struct ReplaceDriveSheet: View {
         let detail: String
         var extra: AnyView? = nil
         switch step {
+        case .copying? where unit?.rebuild != nil:
+            // The real position, read from the controller's memory.
+            let r = unit!.rebuild!
+            let left = previewLeft ?? model.rebuildLeft[unitID]
+            let rate = previewRate ?? model.rebuildRate[unitID]
+            detail = "Copying from Bay \(source + 1) · " + (left.map { "about \(durationText($0)) left" } ?? "working out the time left")
+                + (rate.map { " · \(speedText($0))" } ?? "")
+            extra = AnyView(VStack(alignment: .leading, spacing: 6) {
+                RebuildFill(fraction: r.fraction, vertical: false)
+                    .frame(height: 12)
+                    .background(Color.secondary.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
+                HStack {
+                    Text("\(percentText(r.fraction)) · \(formatBytes(Double(r.position) * 512)) of \(formatBytes(Double(r.end) * 512))")
+                        .monospacedDigit()
+                    Spacer()
+                    Text("You can close this window.").foregroundStyle(.secondary)
+                }
+                .font(.caption)
+            })
         case .copying?:
             var parts = ["Copying from Bay \(source + 1)"]
             if let since = previewSince ?? model.rebuildSeenSince(unit: unitID) {
@@ -123,6 +183,7 @@ struct ReplaceDriveSheet: View {
             detail = "Check the new drive, or try another one. The drive in Bay \(source + 1) still holds everything."
         default:
             detail = phase == .done ? "Both drives hold the same data again."
+                : needsRebuild ? "Starts when you rebuild. About \(estimate) for \(driveSizeText(volume))."
                 : "Starts by itself once the drive is in. About \(estimate) for \(driveSizeText(volume))."
         }
         return StepRow(number: memory.hadRemove ? 3 : 2, title: phase == .done ? "The copy is complete" : (step.map { if case .failed = $0 { return true } else { return false } } == true ? "The copy failed" : "The G-RAID copies the data"),
@@ -131,11 +192,63 @@ struct ReplaceDriveSheet: View {
     }
 
     private var waiting: Bool { if case .waiting? = step { return true } else { return false } }
+    private var needsRebuild: Bool { if case .needsRebuild? = step { return true } else { return false } }
+
+    /// Starts the manual rebuild from inside the guide. The kept drive is the one the controller
+    /// is running on; after a detected swap that may be the older copy, so the panel says so.
+    @ViewBuilder private var rebuildPanel: some View {
+        let keep = unit?.disks.presentPorts.first { $0.index == source }
+        let erase = unit?.disks.presentPorts.first { $0.index == target }
+        let swapped = model.memberSwapSince(unit: unitID)
+        if !memory.confirmingRebuild {
+            Button("Rebuild…") { memory.confirmingRebuild = true; memory.checkedFiles = false }
+                .disabled(model.isWorking || unit.flatMap { rebuildProblem(caps: $0.caps, raid: $0.raid, disks: $0.disks, source: source) } != nil)
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                if let swapped {
+                    Label {
+                        Text("At \(swapped.formatted(date: .omitted, time: .shortened)) the G-RAID switched to Bay \(source + 1)'s copy. It may be the older one: changes made while Bay \(source + 1) was out could be missing. Check your files first.")
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: { Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(.red) }
+                }
+                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Keep").foregroundStyle(.secondary)
+                        Text("Bay \(source + 1) · \(keep?.model ?? "") · \(keep?.serial ?? "")")
+                    }
+                    GridRow {
+                        Text("Erase").foregroundStyle(.red)
+                        Text("Bay \(target + 1) · \(erase?.model ?? "") · \(erase?.serial ?? "")")
+                    }
+                }
+                .font(.callout)
+                Toggle(isOn: $memory.checkedFiles) {
+                    Text("The files on the G-RAID now are the ones I want to keep")
+                }
+                .toggleStyle(.checkbox)
+                HStack {
+                    Button("Cancel") { memory.confirmingRebuild = false }
+                    Spacer()
+                    Button("Erase Bay \(target + 1) and Copy") {
+                        if let u = unit { model.rebuild(unit: u, source: source) }
+                        memory.confirmingRebuild = false
+                    }
+                    .buttonStyle(.borderedProminent).tint(.red)
+                    .disabled(!memory.checkedFiles || model.isWorking)
+                }
+            }
+            .padding(12)
+            .background(Color.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.red.opacity(0.35), lineWidth: 0.5))
+        }
+    }
 
     private var eraseWarning: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            Text(waiting
+            Text(needsRebuild
+                 ? "Nothing is erased until you start the rebuild. Then everything on Bay \(target + 1) is replaced with a copy of Bay \(source + 1)."
+                 : waiting
                  ? "The drive in Bay \(target + 1) will be erased when the copy starts. If it holds anything you need, take it out now."
                  : "The drive you insert in Bay \(target + 1) is erased as soon as it's in, without asking. Make sure it holds nothing you need.")
                 .fixedSize(horizontal: false, vertical: true)
@@ -192,6 +305,119 @@ struct StepRow: View {
                 .overlay(Circle().strokeBorder(state == .current ? brandBlue : Color(nsColor: .separatorColor), lineWidth: state == .current ? 1.5 : 1))
         }
     }
+}
+
+/// The rebuild fill: the copied part of a drive, tinted, with a soft lighter band sweeping
+/// through it in the direction of the copy (upward in a drive card, left to right in the guide),
+/// so it's plain that the copy is moving. Still when Reduce Motion is on.
+struct RebuildFill: View {
+    let fraction: Double
+    var vertical = true
+    var edge = true               // the thin front line (horizontal only); off where text crosses the fill
+    var frozenAt: Double? = nil   // tests/render_previews.sh: draw the sweep at this point (0–1)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
+            // One sweep every 2.2 s, then a short rest before the next.
+            let cycle = frozenAt ?? (context.date.timeIntervalSinceReferenceDate / 2.6).truncatingRemainder(dividingBy: 1)
+            let p = min(1, cycle / 0.85)
+            GeometryReader { g in
+                let f = min(1, max(0, fraction))
+                if vertical {
+                    let h = g.size.height * f
+                    ZStack(alignment: .bottom) {
+                        Rectangle().fill(brandBlue.opacity(vertical ? 0.13 : 0.22))
+                        if !reduceMotion && h > 12 {
+                            SweepBand(vertical: true).frame(height: 30)
+                                .offset(y: -(h + 30) * p + 15)
+                        }
+                    }
+                    .frame(height: h)
+                    .clipped()
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                } else {
+                    let w = g.size.width * f
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(brandBlue.opacity(edge ? 0.22 : 0.13))
+                        if !reduceMotion && w > 12 {
+                            SweepBand(vertical: false).frame(width: 40)
+                                .offset(x: (w + 40) * p - 40)
+                        }
+                        if edge { Rectangle().fill(brandBlue).frame(width: 2).frame(maxWidth: .infinity, alignment: .trailing) }
+                    }
+                    .frame(width: w)
+                    .clipped()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// The light band in the rebuild fill: five solid strips, brightest in the middle, so its edges
+/// look soft without a gradient or a blur.
+struct SweepBand: View {
+    let vertical: Bool
+    private let steps: [Double] = [0.18, 0.38, 0.6, 0.38, 0.18]
+    var body: some View {
+        let strips = ForEach(Array(steps.enumerated()), id: \.offset) { _, o in Rectangle().fill(Color.white.opacity(o)) }
+        if vertical { VStack(spacing: 0) { strips } } else { HStack(spacing: 0) { strips } }
+    }
+}
+
+/// A symbol that turns while the G-RAID is working (the circling arrows during a rebuild), and
+/// stays still when it's paused or Reduce Motion is on.
+struct SpinningSymbol: View {
+    let name: String
+    let spinning: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        // A plain rotation rather than the system rotate effect, which didn't always draw.
+        if spinning && !reduceMotion {
+            TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+                Image(systemName: name)
+                    .rotationEffect(.degrees((context.date.timeIntervalSinceReferenceDate / 2).truncatingRemainder(dividingBy: 1) * 360))
+            }
+        } else {
+            Image(systemName: name)
+        }
+    }
+}
+
+/// Dots travelling from the source drive to the receiving one, along a short track.
+struct RebuildFlow: View {
+    var leftToRight = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
+            let t = reduceMotion ? 0.5 : (context.date.timeIntervalSinceReferenceDate / 1.8).truncatingRemainder(dividingBy: 1)
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.secondary.opacity(0.2)).frame(height: 2)
+                    ForEach(0..<(reduceMotion ? 1 : 2), id: \.self) { i in
+                        let p = (t + Double(i) / 2).truncatingRemainder(dividingBy: 1)
+                        let x = (leftToRight ? p : 1 - p) * (g.size.width - 4)
+                        Circle().fill(brandBlue).frame(width: 4, height: 4)
+                            .opacity(reduceMotion ? 1 : sin(p * .pi))
+                            .offset(x: x)
+                    }
+                }
+                .frame(maxHeight: .infinity)
+            }
+        }
+        .frame(height: 10)
+        .accessibilityHidden(true)
+    }
+}
+
+/// "42 %", or "0.6 %" early on so the first minutes visibly move.
+func percentText(_ f: Double) -> String {
+    let p = f * 100
+    return p < 10 ? String(format: "%.1f %%", p) : String(format: "%.0f %%", p.rounded(.down))
 }
 
 /// "about 8 hours", "about 40 minutes".

@@ -61,6 +61,13 @@ final class ControllerSimulator {
     var raid = ControllerSimulator.capturedRaid
     var disks = ControllerSimulator.capturedDisks
     var staleReads = 0
+    /// Controller RAM for GetRegister: a made-up pattern, with the RAID 1 bytes set like a
+    /// degraded array running on port 0.
+    var xdata: [UInt8] = {
+        var x = (0..<0xE000).map { UInt8(truncatingIfNeeded: $0 &* 7) }
+        x[0x04BF] = 1; x[0x0629] = 2; x[0x060B] = 0x01; x[0x060A] = 0
+        return x
+    }()
     /// Commands executed, by opcode, for tests.
     private(set) var executed: [UInt8] = []
     var executedOpcodes: [UInt8] { executed }
@@ -125,6 +132,9 @@ final class ControllerSimulator {
             case 0x15: reply = raid
             case 0x17: reply = disks
             case 0xB0: applyModeChange(data)
+            case 0x50:
+                let addr = Int(command[2]) << 8 | Int(command[3])
+                if addr < xdata.count { reply = [xdata[addr]] } else { status = 0xFF }
             case 0x20:
                 let addr = (Int(command[2]) << 8 | Int(command[3])) << 7
                 if addr + 128 <= ControllerSimulator.flash.count { reply = Array(ControllerSimulator.flash[addr..<(addr + 128)]) } else { status = 0xFF }

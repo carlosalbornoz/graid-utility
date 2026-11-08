@@ -378,6 +378,25 @@ drive goes into the empty bay of a degraded RAID 1, so the app mostly guides and
   progress bar and a real ETA back. Until then, the estimate uses the manual's 2 h per TB.
   Only RAM addresses are read; never hardware registers (0xE000 and up), whose reads can have
   side effects.
+- **Rebuild display redone and safety changes built 2026-11-08** (renders checked; not yet seen on
+  hardware). Progress is shown once, on the receiving drive: its label card fills from the bottom
+  with a slowly breathing tint and shows the percentage, amount copied and time left in place of
+  its size; dots flow between the bays from the kept drive to the receiving one; the overview
+  only says "Rebuilding" and the Array row "Copying Bay 1 onto Bay 2". The Replace guide uses the
+  same fill, horizontally. Still under Reduce Motion (`RebuildFill`, `RebuildFlow`). Safety items
+  1–5 below are done: "Not in use"/"Checking" names (raw terms kept in the CLI and the report), no
+  reinsert advice, a guide step for a set-aside drive with an in-app **Rebuild** (keep/erase with
+  serials, a "files I want to keep" checkbox, red button; `AppModel.rebuild`), and swap detection
+  across launches (`soleActiveMember`, `isMemberSwap`, UserDefaults `activeMember.*`): a critical
+  event and notification, and a red warning in the Rebuild panel until the array is back in sync.
+- **Real rebuild progress — built 2026-11-08, from live reads.** While a RAID 1 copy runs or is
+  paused (firmware 14… only), each refresh reads the rebuild position and end from controller
+  RAM 0x04AC–0x04BB (16 GetRegister reads; `readRebuildPosition`, `decodeRebuildPosition`, decode
+  checked against the bytes logged during the 2026-11-08 rebuild). The status line says
+  "Rebuilding · 41 %", the receiving bay says "Receiving the copy · 41 % done", and the Replace
+  guide shows a real bar with "about N hours left" once the position has moved for a minute
+  (`rebuildTimeLeft`, from the first reading this session). Falls back to the old indeterminate
+  bar and the 2 h/TB estimate when the position can't be read.
 - **Manual rebuild — CLI built 2026-11-08, not yet run on hardware.** `graidctl rebuild --from
   <1|2> [diskN] --yes-overwrite-other-bay` sends a ModeChange to RAID 1 with payload[0x0A] = 0x81
   and the source port at 0x1C (`rebuildPayload`, `rebuildProblem`, 9 self-tests). It refuses
@@ -397,6 +416,13 @@ drive goes into the empty bay of a degraded RAID 1, so the app mostly guides and
      notification: "The G-RAID switched to the other drive's copy. Changes made since Bay N was
      removed may be missing."
   4. Treat a Blank drive in a degraded RAID 1 as "waiting for a manual rebuild", not "insert again".
+  5. Rename the misleading controller states in the UI. "Blank" (status 4) means "not part of the
+     array", not "empty": in the 2026-11-08 test the drive marked Blank held the newest data.
+     Show **"Not in use"** with "The G-RAID isn't using this drive. Its contents haven't been
+     erased." (and, in a degraded RAID 1, "It may hold changes the other drive doesn't have.").
+     "Rejected" (status 6) becomes **"Not accepted"** with "This drive missed changes while it was
+     out." Keep the controller's own term and number ("Blank, status 4") in the health report,
+     More Details and the CLI, so diagnostics still match the controller.
 
 
 ## Several G-RAIDs at once — names fixed 2026-11-08

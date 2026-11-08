@@ -17,7 +17,7 @@ struct GRAIDUtilityApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("Device") {
-                Button("Refresh") { model.refresh() }
+                Button("Refresh") { model.refreshNow() }
                     .keyboardShortcut("r")
                     .disabled(model.isWorking)
                 Divider()

@@ -170,3 +170,10 @@ x 0B27 ATA_SUBSTATE      ; with 0B28: cleared by 842D
 x EA98 REBUILD_CTX_A     ; per-member context flags (EA96/EA98 pair; member A)
 x EC98 REBUILD_CTX_B     ; per-member context flags (EC96/EC98 pair; member B)
 x F8C0 TIMER_RELOAD      ; with F8C1; timer control X:F8E0, expiry flag X:F8F0 bit 0 (2nd review; not a RAID engine)
+code 08DF RAID_REINIT_FROM_FLASH ; sets 04BF=1, reloads flash config, clears member masks 060A-060D and per-port flags, rebuilds membership (rollback lead)
+code CD25 INT0_RAID_REINIT       ; called only from INT0 ISR (3074), only when level 0B5D = FD (Individual); ends in 08DF
+code BFF6 PORT_LINK_UP           ; from INT1 ISR (1D80/1DDA/1E31), R7 = port, ports in order 0,1,2; RAID 1: 0629=2, ORs port into 060B, may call 08DF
+x 060A REBUILD_MEMBER_MASK      ; set per member by 9165 (91E2), cleared at C3D8 when not in sync
+x 060B MASK_060B                ; NOT the member mask (live read 00 on degraded RAID 1); set in BFF6 only when 060E=1
+x 060D PORT_LINKED_MASK         ; live read 03 with both drives in; BFF6 clears port bit on entry, sets at C05D
+x 04B4 REBUILD_END              ; 8 bytes: two BE dwords, low dword first; live read = volume blocks (7,813,922,816)

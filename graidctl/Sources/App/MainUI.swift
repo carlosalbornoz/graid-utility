@@ -33,7 +33,7 @@ func openDiskUtility() {
 func diskStatusColor(_ s: UInt8) -> Color {
     switch s {
     case 0, 9: return .green
-    case 1, 4, 7, 0xA, 0xB, 0xC, 0x11, 0x1B: return .orange
+    case 1, 4, 6, 7, 0xA, 0xB, 0xC, 0x11, 0x1B: return .orange
     default: return .red
     }
 }
@@ -92,8 +92,9 @@ struct ModeName: View {
     let raw: UInt8
     var font: Font = .body
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            // The name keeps its full width; the chip beside it is fixed-size too.
+        HStack(alignment: .center, spacing: 6) {
+            // The name keeps its full width; the chip beside it is fixed-size too. Centred for the
+            // same reason as SectionHeading.
             Text(mode?.name ?? modeText(raw)).font(font).lineLimit(1).fixedSize()
             if let mode { ModeChip(text: mode.chip) }
         }
@@ -106,7 +107,9 @@ struct SectionHeading: View {
     var chip: String? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            // Centred, not baseline-aligned: on a baseline the small chip's pill hangs low beside
+            // the large title.
+            HStack(alignment: .center, spacing: 8) {
                 Text(title).font(.title3.weight(.semibold))
                 if let chip { ModeChip(text: chip) }
             }
@@ -199,7 +202,9 @@ struct ContentView: View {
         switch model.phase {
         case .ready:
             guard let u = model.selected else { return "" }
-            return (u.model.name.hasSuffix("3") ? "Thunderbolt 3" : "Thunderbolt") + " · " + u.bsdNames.joined(separator: ", ")
+            var s = (u.model.name.hasSuffix("3") ? "Thunderbolt 3" : "Thunderbolt") + " · " + u.bsdNames.joined(separator: ", ")
+            if let t = model.lastUpdated { s += " · Updated " + t.formatted(date: .omitted, time: .shortened) }
+            return s
         case .scanning: return "Looking for a G-RAID…"
         case .needsAccess: return model.waitingForUnlockService ? "G-RAID found · Unlocking…" : "G-RAID found · Waiting for access"
         case .noDevice: return model.usbGRAIDs.isEmpty ? "No G-RAID detected · Waiting for connection…" : "G-RAID connected over USB"
@@ -230,14 +235,24 @@ struct MainToolbar: ToolbarContent {
                     .help("Eject (⌘E)").disabled(model.isWorking)
             }
             // While busy, the spinner takes Refresh's place so the glass pill keeps its size.
-            Button { model.refresh() } label: {
+            Button { model.refreshNow() } label: {
                 if model.isWorking {
                     ProgressView().controlSize(.small).frame(width: 16, height: 16)
                 } else {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    switch model.userRefresh {
+                    case .running:
+                        Label { Text("Refreshing") } icon: { SpinningSymbol(name: "arrow.clockwise", spinning: true) }
+                    case .done:
+                        Label { Text("Refreshed") } icon: { Image(systemName: "checkmark").foregroundStyle(.green) }
+                            .transition(.opacity)
+                    case .idle:
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
                 }
             }
-            .help(model.isWorking ? "Working…" : "Refresh (⌘R)").disabled(model.isWorking)
+            .animation(.easeOut(duration: 0.2), value: model.userRefresh)
+            .help(model.isWorking ? "Working…" : model.userRefresh == .running ? "Refreshing…" : "Refresh (⌘R)")
+            .disabled(model.isWorking)
         }
         trailingMargin
     }
@@ -305,7 +320,7 @@ struct OverviewPanel: View {
                 .accessibilityLabel(unit.model.name)
 
             HStack(spacing: 10) {
-                Image(systemName: healthSymbol).font(.system(size: 26)).foregroundStyle(unit.health.tint)
+                SpinningSymbol(name: healthSymbol, spinning: unit.isActive).font(.system(size: 26)).foregroundStyle(unit.health.tint)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(unit.health == .good ? "Healthy" : unit.statusText).font(.title3.weight(.semibold))
                     Text(healthLine).font(.caption).foregroundStyle(.secondary)
@@ -439,6 +454,7 @@ struct ArrayTab: View {
         @Published var open = false
         @Published var choice: TargetMode?
         @Published var replaceOpen = false
+        @Published var whyDisabled = false
     }
     @StateObject private var sheet = SheetState()
 
@@ -450,17 +466,31 @@ struct ArrayTab: View {
                 Button("Change RAID Mode…") { openSheet(nil) }
                     .controlSize(.large)
                     .disabled(blocker != nil || model.isWorking)
-                    .help(blocker ?? "Choose Individual, RAID 0 or RAID 1. Erases both disks.")
+                    .help("Choose Individual, RAID 0 or RAID 1. Erases both disks.")
+                    .overlay {
+                        // A disabled button ignores the mouse, so the reason lives on a layer over
+                        // it: a tooltip on hover, and a popover when clicked.
+                        if let blocker {
+                            Color.clear.contentShape(Rectangle())
+                                .onTapGesture { sheet.whyDisabled = true }
+                                .help(blocker)
+                                .popover(isPresented: $sheet.whyDisabled, arrowEdge: .bottom) {
+                                    Text(blocker).font(.callout).fixedSize(horizontal: false, vertical: true)
+                                        .padding(14).frame(width: 260, alignment: .leading)
+                                }
+                        }
+                    }
             }
 
             if unit.health != .good || unit.isBusy {
                 HStack(spacing: 10) {
-                    Image(systemName: unit.isBusy ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle.fill").foregroundStyle(unit.health.tint)
-                    Text(unit.statusText).font(.callout.weight(.medium))
-                    if unit.replaceStep != nil {
+                    SpinningSymbol(name: unit.isBusy ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle.fill", spinning: unit.isActive)
+                        .foregroundStyle(unit.health.tint)
+                    Text(arrayRowText).font(.callout.weight(.medium))
+                    if let guide = guideButton {
                         Spacer(minLength: 12)
-                        Button("Replace a Drive…") { sheet.replaceOpen = true }
-                            .help("Step-by-step help for putting in a new drive and watching the copy.")
+                        Button(guide.title) { sheet.replaceOpen = true }
+                            .help(guide.help)
                             // Its own anchor: two sheets on one view don't both present on older macOS.
                             .sheet(isPresented: $sheet.replaceOpen) {
                                 ReplaceDriveSheet(unitID: unit.id) { sheet.replaceOpen = false }.environmentObject(model)
@@ -469,10 +499,9 @@ struct ArrayTab: View {
                 }
             }
 
+            // The enclosure frame is the container; no panel around it.
             DriveBays(unit: unit)
-                .contentGroup(padding: 20)
 
-            if let blocker { Text(blocker).font(.caption).foregroundStyle(.secondary) }
         }
         .sheet(isPresented: $sheet.open) {
             ChangeModeSheet(unit: unit, preview: sheet.choice.map { (1, $0, false) }) { mode, name in
@@ -490,11 +519,38 @@ struct ArrayTab: View {
 
     private var title: String { unit.currentTarget?.name ?? modeText(unit.caps.currentMode) }
 
+    /// While copying, say which way; the progress itself is shown on the receiving drive.
+    private var arrayRowText: String {
+        if case .copying(let b?)? = unit.replaceStep { return "Copying Bay \(2 - b) onto Bay \(b + 1)" }
+        if case .paused(let b?)? = unit.replaceStep { return "Copy onto Bay \(b + 1) paused by the G-RAID" }
+        return unit.statusText
+    }
+
     private var detail: String { unit.currentTarget?.summary ?? "This mode can't be changed with this utility." }
+
+    /// The guide's button, named for what it helps with now: Details while a copy runs (progress,
+    /// speed and time left). None while a returning drive is being checked (that takes seconds).
+    private var guideButton: (title: String, help: String)? {
+        switch unit.replaceStep {
+        case .remove?, .insert?, .waiting?:
+            return ("Replace a Drive…", "Step-by-step help for putting in a new drive.")
+        case .needsRebuild(let b)?:
+            return ("Rebuild…", "Copy Bay \(2 - b) onto the drive the G-RAID set aside in Bay \(b + 1).")
+        case .failed?:
+            return ("Try Again…", "What to do now that the copy failed.")
+        case .copying?, .paused?:
+            return ("Details…", "Progress, speed and time left for the copy.")
+        case .checking?, nil:
+            return nil
+        }
+    }
 
     private var blocker: String? {
         if !unit.model.canChangeMode { return "Mode changes are turned off for this unrecognised model." }
-        if unit.isBusy { return "Available after the current rebuild or verify finishes." }
+        if unit.isBusy {
+            if let b = unit.replaceStep?.bay { return "You can change the RAID mode once the copy onto Bay \(b + 1) finishes." }
+            return "You can change the RAID mode once the G-RAID finishes what it's doing (\(unit.statusText.lowercased()))."
+        }
         if unit.disks.presentPorts.isEmpty { return "Insert disks to set up the array." }
         return nil
     }
@@ -540,24 +596,38 @@ struct DataBlock: View {
 struct DriveBays: View {
     @EnvironmentObject var model: AppModel
     let unit: Unit
-    static let spacing: CGFloat = 40
 
+    /// The bays drawn as the enclosure's front: stacked, Bay 2 on top as on the G-RAID itself.
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
             if let caption = volumeCaption {
-                VolumeBrace(text: caption)
-                    .frame(width: CGFloat(slots.count - 1) * (DriveBay.width + Self.spacing))
-                    .padding(.horizontal, DriveBay.width / 2)
+                Text(caption).font(.callout.weight(.medium)).foregroundStyle(.secondary)
             }
-            HStack(alignment: .top, spacing: Self.spacing) {
-                ForEach(slots, id: \.0) { slot in
+            VStack(spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.element.0) { i, slot in
                     DriveBay(unit: unit, bay: slot.0, port: slot.1,
                              lastSeen: model.lastSeenDrive(unit: unit.id, bay: slot.0))
+                    if i < rows.count - 1 { gap(above: slot.0, below: rows[i + 1].0) }
                 }
             }
+            .padding(16)
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.secondary.opacity(0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1))
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    /// The space between two bays; while one copies onto the other, the data flows through it.
+    @ViewBuilder private func gap(above: Int, below: Int) -> some View {
+        if case .copying(let b?)? = unit.replaceStep, [above, below].contains(b) {
+            VerticalFlow(upward: b == above).frame(height: 18).frame(maxWidth: .infinity)
+        } else {
+            Color.clear.frame(height: 12)
+        }
+    }
+
+    /// Top to bottom: the highest bay first.
+    private var rows: [(Int, Port?)] { slots.sorted { $0.0 > $1.0 } }
 
     private var volumeCaption: String? {
         guard slots.count > 1 else { return nil }
@@ -615,34 +685,45 @@ struct BraceArmShape: Shape {
 /// One bay: its name, the drive drawn as a 3.5-inch disk with a label, and a note when the drive
 /// needs attention. Everything on the label comes from what the drive itself reports.
 struct DriveBay: View {
+    @EnvironmentObject var model: AppModel
     let unit: Unit
     let bay: Int
     let port: Port?
     let lastSeen: KnownDrive?
     final class Popup: ObservableObject { @Published var open = false }
     @StateObject private var popup = Popup()
-    static let width: CGFloat = 176
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Bay \(bay + 1)").font(.headline).frame(maxWidth: .infinity)
-            Button { popup.open = true } label: { drawing }
-                .buttonStyle(.plain)
-                .disabled(identity == nil)
-                .help(identity == nil ? "" : "Show drive details")
-                .popover(isPresented: $popup.open, arrowEdge: .trailing) { details }
-            if let note {
-                Label { Text(note.text).fixedSize(horizontal: false, vertical: true) } icon: {
-                    Image(systemName: note.symbol).foregroundStyle(note.color)
+        HStack(alignment: .top, spacing: 12) {
+            // The bay number, coloured by the drive's state (so the card itself needs no dot).
+            Text("\(bay + 1)").font(.caption.weight(.bold)).monospacedDigit().foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(circleColor))
+                .padding(.top, 31)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Button { popup.open = true } label: { drawing }
+                    .buttonStyle(.plain)
+                    .disabled(identity == nil)
+                    .help(identity == nil ? "" : "Show drive details")
+                    .popover(isPresented: $popup.open, arrowEdge: .trailing) { details }
+                if let note {
+                    Label { Text(note.text).fixedSize(horizontal: false, vertical: true) } icon: {
+                        SpinningSymbol(name: note.symbol, spinning: port?.status == 1 && unit.isActive).foregroundStyle(note.color)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
         }
-        .frame(width: Self.width, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
         .accessibilityAddTraits(identity == nil ? [] : .isButton)
+    }
+
+    private var circleColor: Color {
+        guard let p = port else { return lastSeen == nil ? Color.secondary.opacity(0.45) : .red }
+        return diskStatusColor(p.status)
     }
 
     // MARK: Facts
@@ -656,9 +737,15 @@ struct DriveBay: View {
 
     /// No drive is answering in this bay: empty, or a member the controller lost.
     private var isAbsent: Bool { port == nil || port?.status == 3 }
-    private var isFailed: Bool { port.map { [5, 6, 8].contains($0.status) } ?? false }
+    private var isFailed: Bool { port.map { $0.status == 8 } ?? false }
 
-    private var statusText: String { port.map { diskStatusText($0.status) } ?? (lastSeen == nil ? "Empty" : "Missing") }
+    private var statusText: String { port.map { diskStatusDisplay($0.status) } ?? (lastSeen == nil ? "Empty" : "Missing") }
+
+    /// This bay is receiving a rebuild whose position is known: the card shows the progress.
+    private var copyProgress: RebuildPosition? {
+        guard let p = port, p.status == 1 || p.status == 0x11 else { return nil }
+        return unit.rebuild
+    }
     private var statusColor: Color { port.map { diskStatusColor($0.status) } ?? (lastSeen == nil ? .secondary : .red) }
 
     private var sizes: [Double] { unit.disks.presentPorts.filter { $0.status != 3 }.map(\.capacityBytes) }
@@ -687,6 +774,19 @@ struct DriveBay: View {
 
     private var note: (text: String, symbol: String, color: Color)? {
         let mode = unit.currentTarget
+        if let p = port, mode == .raid1 {
+            let degraded = unit.raid.volume(0).status == 1
+            switch p.status {
+            case 4:
+                // Short under the card; the full explanation is in the drive's details.
+                return (degraded ? "Set aside, not erased. May hold newer changes." : "Set aside, not erased.", "info.circle", .orange)
+            case 6:
+                return ("Checking this drive…", "hourglass", .secondary)
+            case 5:
+                return ("This drive is from another set. The G-RAID erases it for the copy, which starts by itself.", "exclamationmark.triangle.fill", .orange)
+            default: break
+            }
+        }
         if isAbsent || isFailed {
             let verb = isAbsent ? "Insert" : "Replace it with"
             switch mode {
@@ -706,7 +806,9 @@ struct DriveBay: View {
             }
         }
         if port?.status == 7 { return ("Expected to fail soon. Back up, then replace it.", "exclamationmark.triangle.fill", .orange) }
-        if port?.status == 1 { return ("Receiving the copy. Leave it connected.", "arrow.triangle.2.circlepath", .orange) }
+        if port?.status == 1 && copyProgress == nil {
+            return ("Receiving the copy. Leave it connected.", "arrow.triangle.2.circlepath", .orange)
+        }
         if let p = port, mode == .raid0 || mode == .raid1, disksMismatched(sizes), let lo = sizes.min() {
             if p.capacityBytes <= lo { return ("The smaller drive sets the volume size.", "info.circle", .secondary) }
             return ("About \(formatBytes(p.capacityBytes - lo)) of this drive goes unused.", "info.circle", .secondary)
@@ -725,67 +827,83 @@ struct DriveBay: View {
 
     // MARK: Drawing
 
+    /// One drive lying flat, front edge facing you, with the sled's latch on the right.
     private var drawing: some View {
         let ghost = isAbsent
-        let body = RoundedRectangle(cornerRadius: 9, style: .continuous)
+        let body = RoundedRectangle(cornerRadius: 12, style: .continuous)
         let edge = Color.secondary.opacity(ghost ? 0.45 : 0.55)
-        return ZStack {
+        return HStack(spacing: 0) {
+            label.padding(10)
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .strokeBorder(edge, style: StrokeStyle(lineWidth: 1.25, dash: ghost ? [3, 3] : []))
+                .frame(width: 10, height: 44)
+                .padding(.trailing, 12)
+        }
+        .frame(height: 84)
+        .frame(maxWidth: .infinity)
+        .background {
             if !ghost { body.fill(Color(nsColor: .textBackgroundColor)) }
             body.strokeBorder(edge, style: StrokeStyle(lineWidth: 1.25, dash: ghost ? [5, 4] : []))
-            if !ghost { screws(edge) }
-            VStack(spacing: 0) {
-                label.padding(.horizontal, 14).padding(.top, 20)
-                Spacer(minLength: 0)
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .strokeBorder(edge, style: StrokeStyle(lineWidth: 1.25, dash: ghost ? [3, 3] : []))
-                    .frame(width: 84, height: 10)
-                    .padding(.bottom, 10)
-            }
         }
-        .frame(width: Self.width, height: 262)
         .contentShape(body)
     }
 
-    private func screws(_ color: Color) -> some View {
-        GeometryReader { g in
-            ForEach(0..<4, id: \.self) { i in
-                Circle().strokeBorder(color, lineWidth: 1)
-                    .frame(width: 7, height: 7)
-                    .position(x: i % 2 == 0 ? 11 : g.size.width - 11, y: i < 2 ? 11 : g.size.height - 11)
-            }
-        }
-    }
-
     private var label: some View {
-        let shape = RoundedRectangle(cornerRadius: 5, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
         let ghost = isAbsent
         let split = identity.map { splitDriveModel($0.model) }
         let primary: HierarchicalShapeStyle = ghost ? .tertiary : .primary
-        return VStack(alignment: .leading, spacing: 3) {
+        return HStack(alignment: .center, spacing: 16) {
             if let split {
-                Text(split.vendor ?? " ").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text(split.model).font(.caption2.monospaced()).foregroundStyle(.tertiary)
-                    .lineLimit(1).truncationMode(.tail)
-                    .padding(.bottom, 22)
-                Text(sizeText).font(.system(size: 30, weight: .semibold)).monospacedDigit().foregroundStyle(primary)
-                StatusDot(text: statusText, color: statusColor).font(.caption)
-                if let role { Text(role).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                Spacer(minLength: 8)
-                Text(identity?.serial ?? "").font(.caption2.monospaced()).foregroundStyle(.tertiary)
-                    .lineLimit(1).truncationMode(.middle)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(split.vendor ?? " ").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(split.model).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.tail)
+                    Text(identity?.serial ?? "").font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+                }
+                .frame(width: 150, alignment: .leading)
+                if let r = copyProgress {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(percentText(r.fraction)).font(.system(size: 26, weight: .semibold)).monospacedDigit()
+                            .contentTransition(.numericText())
+                        Text(copyLine(r)).font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                    }
+                } else {
+                    Text(sizeText).font(.system(size: 26, weight: .semibold)).monospacedDigit().foregroundStyle(primary)
+                        .fixedSize()
+                    VStack(alignment: .leading, spacing: 2) {
+                        // No dot: the bay number beside the card already shows the colour. The
+                        // word takes it too, except for a normal Online.
+                        Text(statusText).font(.caption.weight(.medium))
+                            .foregroundStyle(port?.status == 0 ? Color.primary : statusColor)
+                        if let role { Text(role).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                    }
+                }
             } else {
-                Spacer()
-                Text("No drive").font(.callout.weight(.medium)).foregroundStyle(.secondary)
-                Text("This bay is empty.").font(.caption).foregroundStyle(.secondary)
-                Spacer()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("No drive").font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                    Text("This bay is empty.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background {
+            if !ghost {
+                shape.fill(Color(nsColor: .controlBackgroundColor))
+                if let r = copyProgress { RebuildFill(fraction: r.fraction, vertical: false, edge: false).clipShape(shape) }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .frame(height: 188, alignment: .top)
-        .background { if !ghost { shape.fill(Color(nsColor: .controlBackgroundColor)) } }
         .overlay(shape.strokeBorder(isFailed ? Color.red : Color(nsColor: .separatorColor),
                                     style: StrokeStyle(lineWidth: isFailed ? 1.5 : 1, dash: ghost ? [3, 3] : [])))
+    }
+
+    /// "1.64 TB of 4.00 TB · about 5 hours left · 163 MB/s", with whatever is known so far.
+    private func copyLine(_ r: RebuildPosition) -> String {
+        var parts = ["\(formatBytes(Double(r.position) * 512)) of \(formatBytes(Double(r.end) * 512))"]
+        if let left = model.rebuildLeft[unit.id] { parts.append("about \(durationText(left)) left") }
+        if let rate = model.rebuildRate[unit.id] { parts.append(speedText(rate)) }
+        return parts.joined(separator: " · ")
     }
 
     // MARK: Details
@@ -817,7 +935,11 @@ struct DriveBay: View {
                 }
                 .font(.callout)
             }
-            if let note { Text(note.text).font(.callout).fixedSize(horizontal: false, vertical: true) }
+            if let p = port, let full = diskStatusExplanation(p.status, degradedRAID1: unit.raid.volume(0).status == 1) {
+                Text(full).font(.callout).fixedSize(horizontal: false, vertical: true)
+            } else if let note {
+                Text(note.text).font(.callout).fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(16)
         .frame(width: 330, alignment: .leading)
@@ -1361,5 +1483,32 @@ struct NoticeBar: View {
         .padding(.vertical, 10)
         .background(Color(nsColor: .controlBackgroundColor))
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// Dots travelling between two stacked bays, from the drive that's kept to the receiving one.
+struct VerticalFlow: View {
+    let upward: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
+            let t = reduceMotion ? 0.5 : (context.date.timeIntervalSinceReferenceDate / 1.6).truncatingRemainder(dividingBy: 1)
+            GeometryReader { g in
+                ZStack(alignment: .top) {
+                    Capsule().fill(Color.secondary.opacity(0.2)).frame(width: 2)
+                    ForEach(0..<(reduceMotion ? 1 : 2), id: \.self) { i in
+                        let p = (t + Double(i) / 2).truncatingRemainder(dividingBy: 1)
+                        let y = (upward ? 1 - p : p) * (g.size.height - 4)
+                        Circle().fill(brandBlue).frame(width: 4, height: 4)
+                            .opacity(reduceMotion ? 1 : sin(p * .pi))
+                            .offset(y: y)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .frame(width: 10)
+        .accessibilityHidden(true)
     }
 }

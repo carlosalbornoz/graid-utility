@@ -73,7 +73,7 @@ The controller starts copying by itself (FIRMWARE.md "Rebuild"). Estimated about
 | Check | Expect | Result |
 |---|---|---|
 | Individual mode | Two volumes, one per disk; sizes per the formula | |
-| Final mode | Your choice (decided later) | |
+| Final mode | Your choice, from a written comparison: controller RAID 1, controller RAID 0, or Individual mode with Mac-side mirroring (OpenZFS: resyncs only used data, checksums catch a stale copy; Disk Utility's AppleRAID mirror: built in, full rebuilds) | |
 | Restore | Copy the files back from the NAS and compare names and sizes again | |
 
 ## Open question from step 4: is a stale member re-admitted?
@@ -125,3 +125,44 @@ port 1 `04 ff …` (Blank, order 0xFF); RAID status volume `01` (Degraded).
 old drive back can, some minutes later, make the controller switch to the old drive's data
 without any warning. The app must warn about this, and must never suggest reinserting a drive
 that was out while the volume was in use.
+
+### Manual rebuild, Bay 1 → Bay 2 (2026-11-08 ~15:13)
+
+- `graidctl rebuild --from 1 disk4 --yes-overwrite-other-bay`: plan showed Keep Bay 1
+  PK1334PEHT4U9S Online, Erase Bay 2 PK1334PEHNVSSS Blank; REBUILD typed. The controller reset
+  straight after accepting it (the tool then reported "read of sector 0x11 failed: Device not
+  configured", as with a mode change) and reconnected with the volume unmounted.
+  **The rebuild command works on hardware.** The newer test files on Bay 2 were overwritten, as
+  expected; the swap evidence was already recorded above.
+- `graidctl watch-ram --interval 30 --ports` logging to `/tmp/rt/rebuild-ram.log`. First sample
+  15:16:14: volume **Rebuilding**, Bay 2 Rebuilding order 01, in_sync 0x04BF 01 → **00**,
+  0x0629 02 → 00, rebuild mask 0x060A 00 → **02** (Bay 2's bit), 0x0499 01 → 02,
+  **rebuild position 0x04AC = 0x028FCB00 = 42,978,048 sectors (~22 GB, 0.55 %)** of the end
+  value 7,813,922,816, about 2.5 min in: ~130–140 MB/s, so about **8 hours** in total.
+  **A real progress bar is possible: position ÷ end.**
+- Port record byte **+0x16 of Bay 2: 00 → 01** now that it's a member again (Bay 1 stays 01).
+  Second data point for +0x16 = "member". +0x17 stays ff, so it isn't the order byte.
+- 15:24:12: **2.50 %**, averaging **163 MB/s** over the first 8 minutes, so about **6.6 hours left**
+  (finishing around 22:00). The position climbs steadily sample to sample.
+- 15:28: logger stopped; new app installed with the real progress bar. **Confirmed in the app**:
+  status "Rebuilding · ~3.5 %", Bay 2 "Receiving the copy · … done", Replace guide with a real bar.
+  Still to do when the copy ends (~22:00): re-check the 42 test files, and a one-off
+  `watch-ram --ports` snapshot with both drives in sync (app quit for a minute) to settle +0x16.
+
+## Next: the stale-drive repeat, with evidence (planned)
+
+Goals: (1) find where the controller records "written while degraded", (2) see what makes it swap
+to the stale drive. Test data only; G-RAID Utility quit while `graidctl` reads.
+
+Snapshots, each taken at the same four moments: **A** both drives in sync, **B** right after
+pulling Bay 1, **C** right after the first write while degraded, **D** right after Bay 1 goes
+back in (and again once it reads Blank).
+- Controller RAM 0x0000–0x0FFF (one-off dump, about 10 minutes each at ~150 ms per read): diffing
+  B against C shows what changes on the first degraded write.
+- The flash config block (read-only `firmware-dump`, around 0x1F000): shows whether the
+  record lives in flash, which would survive a power cycle.
+- The usual `watch-ram` fields every 5 s between snapshots, including port record +0x16.
+
+Then, to find the swap trigger: keep `watch-ram` polling for 30 minutes so the drives never idle;
+if nothing swaps, stop for 20 minutes and read again. The first read after an idle gap that
+shows a member change points at idle/wake as the trigger.

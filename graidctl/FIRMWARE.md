@@ -328,6 +328,102 @@ What the Ghidra pass got wrong here (kept for the record):
   RAID 1 on this firmware must be treated as unsafe to reinsert a drive into after the volume has
   been written while degraded.
 
+### Tracing the rollback (2026-11-08, two passes over fw.asm; partly confirmed)
+
+- **Port status is recomputed on every Get Disk Status** (0xCDFC), not stored: it's derived from
+  each port record's state byte plus two masks, **X:0x060B (member ports)** and **X:0x060A**
+  (set per member by 0x9165 REBUILD_BEGIN at 0x91E2; cleared at 0xC3D8 when not in sync). A member
+  swap is therefore a rewrite of these masks.
+- **0x08DF re-initialises the RAID set from flash** (confirmed): it sets X:0x04BF = 1 ("in sync"),
+  reloads the config block (from 0x1F000 or 0xF000 depending on the image, 0x0913–0x0929),
+  checks its signature and checksum (0x3DEB = 0x10 0x01, sum at 0x3DEE), then **clears X:0x060B–
+  0x060D, X:0x060A and every per-port flag** (0x097B onward) and resets the member count
+  (X:0x0498), the rebuild position (X:0x04AC–0x04BB) and the port records, then re-initialises the
+  SATA ports. It doesn't pick members itself: they're re-added afterwards by the link-up handler
+  (below). It has 12 callers.
+- **What runs it in RAID 1 is a drive link event, not a host command** (second pass, confirmed
+  from fw.asm). The INT0 path (0xCD25, from the INT0 handler at 0x3074) only applies when the
+  current level X:0x0B5D is 0xFD, i.e. **Individual mode**, so it isn't what we saw (the first pass
+  said otherwise). The RAID 1 paths into 0x08DF are: 0xBFF6 at 0xC3A0 (a port joins, the scan of
+  port roles finds none in role 1, one in role 2, and the set isn't in sync), 0xBFF6 at 0xC668,
+  the port-removal task 0x1B25 (0x1E3E), and 0x8A1F / 0xADD4 (callers not traced).
+- **INT1 (0x1D15) is the drive link interrupt** (confirmed). It checks the ports **in a fixed
+  order, 0 then 1 then 2** (flags in X:0xF92A via 0x476F / 0xB60D / 0x150D, link state at
+  X:0xEA80 / 0xEC80 / 0xEE80). Link up → 0xBFF6(port); link down → 0x1B25 or 0x2526.
+- ~~The member mask X:0x060B is only ever set by 0xBFF6; membership is rebuilt in port order~~
+  **Refuted by the live read below**: 0x060B reads 00 on a degraded RAID 1, so it isn't the member
+  mask here (0xBFF6 only sets it when X:0x060E = 1).
+- **0xBFF6 is the per-port link-up handler** (confirmed): R7 = port; it records the port in
+  X:0x0A08, clears its bit in X:0x060D, sets up the port's PHY block (0xEA97 / 0xEC97 / 0xEE97),
+  and for RAID 1 (X:0x04F0 = 1) sets X:0x0629 = 2 (degraded) and **ORs the port into the member
+  mask** on both paths (0xC300–0xC310, 0xC319–0xC329), then scans the port roles and may run 0x08DF.
+
+**Working explanation (refuted in part by the live read below; kept for the record):** a drive link event some minutes after the reinsert
+(a drive leaving and re-entering a power state, or a link retrain) ran 0xBFF6 for a port, which
+re-initialised the set through 0x08DF. Membership was then rebuilt in port order, with port 0
+(the bottom drive) handled first, and nothing in this path compares which drive holds newer data.
+The timing fits: G-RAID Utility was quit around 14:20, so nothing touched the drives until the
+command at 14:36 woke them.
+
+**Still open:** the exact rule in 0xBFF6's role scan (0x634D roles 1/2/3, flags in IRAM 0x33–0x35)
+that decides which arriving port becomes the source; whether the drives really left a power state
+(could be checked by repeating the test with the app polling, so the drives never idle); and the
+callers of 0x8A1F and 0xADD4. **Practical advice until then:** when recovering, keep the drive with
+the good data in the **bottom slot (Bay 1)**, and don't leave a degraded RAID 1 idle with a stale
+drive inserted.
+
+
+### First live RAM read (2026-11-08 15:07, `graidctl watch-ram`, degraded RAID 1 after the swap)
+
+GetRegister works on the real unit; three samples 3 s apart, all identical:
+
+| Address | Value | Meaning |
+|---|---|---|
+| reported | volume Degraded; Bay 1 Online order 00; Bay 2 Blank order ff | matches `graidctl status` |
+| 0x04BF | 01 | in sync: **confirmed** (Degraded is in-sync + 0x0629 = 2) |
+| 0x0629 | 02 | degraded base: **confirmed** |
+| 0x04F0 | 01 | internal level 1 = RAID 1: **confirmed** (MODE_TO_LEVEL 2 → 1) |
+| 0x0B5D | fe | not 0xFD, so not Individual (meaning of 0xFE open) |
+| **0x060B** | **00** | **not a member mask here.** The second pass's "members are only set by 0xBFF6, port 0 first" is **refuted**: 0xBFF6 only sets 0x060B/0x060C when X:0x060E = 1 (0xC011–0xC013), which isn't this setup |
+| 0x060D | 03 | both ports' bits set: fits "port linked up" (0xBFF6 clears the bit on entry, sets it at 0xC05D) |
+| 0x060A | 00 | no rebuild members |
+| 0x0498 / 0x0499 / 0x049A | 02 / 01 / 09 | member count 2, 1 (in-use members?), 09 (unknown) |
+| 0x054D–0x0555 | all 00 | no override flags |
+| 0x04AC–0x04B3 | all 00 | rebuild position 0 (no rebuild running) |
+| **0x04B4–0x04BB** | **d1 bf 00 00 00 00 00 01** | **rebuild end = 0x1_D1BF0000 = 7,813,922,816 = the volume size**, stored as two big-endian dwords, low dword first. **Confirms the rebuild end field**; position ÷ end should give a real progress bar |
+
+**Port records, same moment (one-off dump, 15:10):** most of each 0xC2-byte record is leftover
+noise, but these differ meaningfully between Bay 1 (Online, member) and Bay 2 (Blank, order ff):
++0x00 port number (00 / 01); **+0x16: 01 / 00** (leading candidate for "active member"; already
+noted as the byte that picks whose size Get RAID Status reports); +0x17: 6e / ff; +0x4E: 01 / 02;
++0x56: 00 / 01. +0xA2–0xA9 hold the array size in sectors in both (d1 bf 00 00 · 00 00 00 01).
+One snapshot only: needs a second one with both drives as members to confirm.
+
+**During a manual rebuild (15:16, Bay 1 → Bay 2):** volume Rebuilding, 0x04BF = 00, 0x0629 = 00,
+**0x060A = 02** (the receiving port's bit: confirms 0x060A as the rebuild-target mask), 0x0499 = 02,
+**0x04AC–0x04B3 = 02 8f cb 00 · 00 00 00 00 → position 42,978,048 sectors**, growing toward the end
+value at 0x04B4. Same layout as the end value (two big-endian dwords, low first). Bay 2's record
+**+0x16 went 00 → 01** on becoming a member again; +0x17 stayed ff.
+
+So the rollback's mechanism is **unexplained** again: where this firmware keeps "which port is the
+member" (the order byte 0xFF in the reply) is still to be found. Next: dump both port records
+(0x0000–0x0183) to find the field behind order/status, then log it through a repeat of the test.
+
+### What the old Configurator does in the same situation (confirmed from its code, 2026-11-08)
+
+- `-[AppDelegate ShowDevInfo_thread]` shows the **Rebuild** button only when the mode is RAID 1,
+  the array is **Degraded**, and each disk reads **Online or Blank** (Online+Blank, Blank+Online,
+  and even Blank+Blank). Rejected, ID Mismatch and the rest get no button and no message.
+- `-[AppDelegate Rebuild_thread]` copies **from whichever disk the controller reports Online** onto
+  the Blank one (via `degradedDiskNum`), after two dialogs: "You are about to rebuild Disk %d using
+  the contents of Disk %d. All the data on Disk %d will be erased." and "Are you sure…?". Then
+  `diskutil unmountDisk` and the ModeChange with payload[0x0A] = 0x81.
+- Nothing in it knows which drive is newer, and it never warns that a returning drive missed
+  writes. In our test it would have offered the right copy (2 → 1) before the swap and the wrong
+  one (1 → 2, stale over good) after it, making the rollback permanent with the user's consent.
+- Its only GetRegister call is in `GetFwVersion` (0x100010E1F), so the read-only command is one
+  the vendor's own app used.
+
 ## Temperature and fans (confirmed: not reported)
 
 The Capabilities handler (0xDA14) hard-codes reply bytes 44–46 (TemperatureReport,

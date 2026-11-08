@@ -144,7 +144,36 @@ struct RenderPreviews {
         renderView("replace-insert", sheetFor(rEmpty, rm))
         renderView("replace-waiting", sheetFor(rForeign, rm))
         renderView("replace-copying", sheetFor(rCopy, rm))
+        // With the real position from controller RAM (42 %, as a live reading would give).
+        var rCopyPos = rCopy; rCopyPos.rebuild = RebuildPosition(position: 3_281_847_582, end: 7_813_922_816)
+        renderView("replace-copying-progress", AnyView(ReplaceDriveSheet(unitID: rCopyPos.id, previewUnit: rCopyPos,
+            previewSince: Date(timeIntervalSince1970: 1_762_600_000), previewLeft: 4.6 * 3600, previewRate: 163e6) {}.environmentObject(rm)))
+        // The sweep, frozen at five points, for both bars.
+        renderView("rebuild-sweep-frames", AnyView(HStack(alignment: .bottom, spacing: 18) {
+            ForEach([0.1, 0.3, 0.5, 0.7, 0.9], id: \.self) { t in
+                VStack(spacing: 10) {
+                    RebuildFill(fraction: 0.62, frozenAt: t)
+                        .frame(width: 120, height: 188)
+                        .background(Color(nsColor: .controlBackgroundColor))
+                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Color(nsColor: .separatorColor)))
+                    RebuildFill(fraction: 0.62, vertical: false, frozenAt: t)
+                        .frame(width: 120, height: 12)
+                        .background(Color.secondary.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    Text(String(format: "t = %.1f", t)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }.padding(20)))
+        let rebPos = AppModel(); rebPos.units = [rCopyPos]; rebPos.phase = .ready
+        rebPos.previewRebuild(unit: rCopyPos.id, left: 4.6 * 3600, rate: 163e6)
+        render("array-raid1-rebuilding-progress", rebPos)
         renderView("replace-failed", sheetFor(rFail, rm))
+        // A drive the G-RAID set aside (Blank): the guide offers the manual rebuild.
+        let rBlank = customUnit(mode: 2, volumeStatus: 1, volumeBlocks: 7_813_922_816, drives: [(hgst, "PK1334PEHT4U9S", 0, tb4), (hgst, "PK1334PEHNVSSS", 4, tb4)])
+        let rbm = AppModel(); rbm.units = [rBlank]; rbm.phase = .ready
+        renderView("replace-needs-rebuild", sheetFor(rBlank, rbm))
+        render("array-raid1-set-aside", rbm)
         renderView("change-step1-mismatch", AnyView(ChangeModeSheet(unit: mis.units[0], preview: (1, .raid1, false), commit: { _, _ in }, cancel: {})))
         let ind = AppModel(); ind.units = [customUnit(mode: 0, volumeBlocks: 0, drives: [(hgst, "PK1334PEHT4U9S", 0, tb4), nil])]; ind.phase = .ready
         render("array-individual-empty", ind)

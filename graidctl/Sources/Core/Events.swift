@@ -81,12 +81,12 @@ func diffSnapshots(old: [String: UnitSnapshot], new: [String: UnitSnapshot], con
             let label = "Disk \(bay + 1)"
             switch (o.ports[bay], u.ports[bay]) {
             case (nil, let n?):
-                ev(u, .disk, .info, "\(label) inserted", "\(u.portModels[bay] ?? "") · \(diskStatusText(n))")
+                ev(u, .disk, .info, "\(label) inserted", "\(u.portModels[bay] ?? "") · \(diskStatusDisplay(n))")
             case (_?, nil):
                 ev(u, .disk, .warning, "\(label) removed", o.portModels[bay] ?? "")
             case (let a?, let b?) where a != b:
                 let sev: EventSeverity = badDisk.contains(b) ? .critical : (b == 0 || b == 9 ? .info : .warning)
-                let title = b == 7 ? "\(label) predicts failure" : "\(label) \(diskStatusText(b).lowercased())"
+                let title = b == 7 ? "\(label) predicts failure" : b == 6 ? "\(label) being checked" : "\(label) \(diskStatusDisplay(b).lowercased())"
                 ev(u, .disk, sev, title, "\(diskStatusText(a)) → \(diskStatusText(b))")
             default: break
             }

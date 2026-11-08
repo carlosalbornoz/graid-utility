@@ -13,6 +13,9 @@ struct Unit: Identifiable {
     let disks: DiskStatus
     /// Every partition on the unit's disks: volumes, system partitions, unreadable ones.
     var partitions: [Partition] = []
+    /// How far a running RAID 1 rebuild has got, read from controller RAM (nil when none runs
+    /// or the firmware's layout isn't known).
+    var rebuild: RebuildPosition? = nil
 
     /// Mounted volumes (never system partitions such as EFI, even when mounted).
     var volumes: [MountedVolume] {
@@ -109,6 +112,8 @@ struct Unit: Identifiable {
 
     // The controller never reports rebuild progress (FIRMWARE.md "Rebuild"), only the status.
     var isBusy: Bool { [2, 5, 6, 8, 9].contains(raid.volume(0).status) }
+    /// The controller is working right now: rebuilding, migrating or verifying, not paused.
+    var isActive: Bool { [2, 5, 6].contains(raid.volume(0).status) }
 }
 
 /// A drive seen in a bay, kept so a missing drive can still be named.
@@ -140,6 +145,10 @@ final class AppModel: ObservableObject {
     @Published var message: Notice?
     @Published var isWorking = false
     @Published var lastUpdated: Date?
+    /// Feedback for a refresh the user asked for (the toolbar button or ⌘R).
+    enum UserRefresh { case idle, running, done }
+    @Published private(set) var userRefresh: UserRefresh = .idle
+    private var userRefreshStarted = Date.distantPast
     @Published var suggestDiskUtility = false
     /// G-RAIDs connected over USB: the controller can only be managed over Thunderbolt.
     @Published var usbGRAIDs: [Candidate] = []
@@ -318,8 +327,102 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.object(forKey: "rebuildSeen." + unit) as? Date
     }
 
+    /// Which drive a degraded RAID 1 runs on, remembered across launches, so a switch to the
+    /// other drive's (possibly older) copy is caught even if it happened while the app was closed.
+    private func trackActiveMember(_ units: [Unit]) {
+        for u in units {
+            let key = "activeMember." + u.id, swapKey = "memberSwap." + u.id
+            if u.caps.currentMode == 2, u.raid.volume(0).status == 0,
+               u.disks.presentPorts.filter({ $0.status == 0 }).count >= 2 {
+                UserDefaults.standard.removeObject(forKey: swapKey)   // back in sync: nothing to warn about
+            }
+            guard let now = soleActiveMember(mode: u.caps.currentMode, volumeStatus: u.raid.volume(0).status, disks: u.disks) else { continue }
+            let previous = UserDefaults.standard.string(forKey: key)
+            if isMemberSwap(previousSerial: previous, now: now, disks: u.disks) {
+                let old = u.disks.presentPorts.first { $0.serial == previous }
+                let oldBay = old.map { "Bay \($0.index + 1)" } ?? "the other bay"
+                log([GRAIDEvent(unitID: u.id, unitName: name(of: u), category: .array, severity: .critical,
+                                title: "The G-RAID switched to the other drive's copy",
+                                detail: "It's now using Bay \(now.bay + 1) (\(now.serial)) instead of \(oldBay). Changes made while Bay \(now.bay + 1) was out may be missing.")])
+                UserDefaults.standard.set(Date(), forKey: swapKey)
+            }
+            UserDefaults.standard.set(now.serial, forKey: key)
+        }
+    }
+
+    /// When the controller last switched a degraded RAID 1 to the other drive, if it hasn't
+    /// been back in sync since.
+    func memberSwapSince(unit: String) -> Date? {
+        UserDefaults.standard.object(forKey: "memberSwap." + unit) as? Date
+    }
+
+    /// Manual rebuild: copy `source` onto the other bay (FIRMWARE.md "Rebuild"). Unmounts first;
+    /// the G-RAID resets and reconnects, then copies by itself.
+    func rebuild(unit: Unit, source: Int) {
+        isWorking = true
+        message = nil
+        let unitName = self.name(of: unit)
+        Task.detached {
+            var notice: Notice
+            do {
+                let dev = try Device(path: unit.path)
+                let (caps, raid, disks) = try fetchAll(dev)
+                if let problem = rebuildProblem(caps: caps, raid: raid, disks: disks, source: source) { throw ToolError(problem) }
+                _ = try performModeChange(dev: dev, bsdNames: unit.bsdNames,
+                                          payload: rebuildPayload(source: source, name: caps.raidSetName, disks: disks))
+                notice = Notice(.done, "Rebuild started", "The G-RAID copies Bay \(source + 1) onto Bay \(2 - source). It reconnects in a few seconds, then copies by itself.")
+                let event = GRAIDEvent(unitID: unit.id, unitName: unitName, category: .array, severity: .warning,
+                                       title: "Rebuild requested", detail: "Bay \(source + 1) onto Bay \(2 - source)")
+                await MainActor.run { self.log([event]) }
+            } catch {
+                // The controller resets as soon as it accepts the command, so the follow-up read
+                // can fail even though the rebuild started.
+                let text = "\(error)"
+                notice = text.contains("Device not configured")
+                    ? Notice(.done, "Rebuild started", "The G-RAID is resetting. It reconnects in a few seconds, then copies by itself.")
+                    : Notice(.problem, "The rebuild wasn't started", text)
+            }
+            let reported = notice
+            await MainActor.run {
+                self.message = reported
+                self.isWorking = false
+                self.scheduleRefresh()
+            }
+        }
+    }
+
+    /// The first rebuild position seen this session, per unit, for the time-left estimate.
+    private var rebuildFirst: [String: (date: Date, position: UInt64)] = [:]
+    @Published private(set) var rebuildLeft: [String: TimeInterval] = [:]
+    /// Smoothed copy speed per unit, in bytes per second, from consecutive readings.
+    @Published private(set) var rebuildRate: [String: Double] = [:]
+    private var rebuildLast: [String: (date: Date, position: UInt64)] = [:]
+    /// For tests/render_previews.sh: show a rebuild's time left and speed without hardware.
+    func previewRebuild(unit: String, left: TimeInterval, rate: Double) { rebuildLeft[unit] = left; rebuildRate[unit] = rate }
+
     private func trackRebuilds(_ units: [Unit]) {
         for u in units {
+            if let r = u.rebuild {
+                let now = (date: Date(), position: r.position)
+                if let last = rebuildLast[u.id], last.position <= r.position {
+                    rebuildRate[u.id] = rebuildSpeed(last: last, now: now, previous: rebuildRate[u.id])
+                    if now.date.timeIntervalSince(last.date) >= 5 { rebuildLast[u.id] = now }
+                } else {
+                    rebuildLast[u.id] = now
+                    rebuildRate[u.id] = nil
+                }
+                if let first = rebuildFirst[u.id], first.position <= r.position {
+                    rebuildLeft[u.id] = rebuildTimeLeft(first: first, now: (Date(), r.position), end: r.end)
+                } else {
+                    rebuildFirst[u.id] = (Date(), r.position)
+                    rebuildLeft[u.id] = nil
+                }
+            } else {
+                rebuildFirst[u.id] = nil
+                rebuildLeft[u.id] = nil
+                rebuildLast[u.id] = nil
+                rebuildRate[u.id] = nil
+            }
             let key = "rebuildSeen." + u.id
             switch u.replaceStep {
             case .copying?, .paused?:
@@ -353,6 +456,26 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// A refresh the user asked for: the button spins while it runs (at least half a second, so
+    /// it registers), then shows a checkmark briefly.
+    func refreshNow() {
+        guard !isWorking, userRefresh != .running else { return }
+        userRefresh = .running
+        userRefreshStarted = Date()
+        refresh()
+    }
+
+    private func finishUserRefresh() {
+        guard userRefresh == .running else { return }
+        let wait = max(0, 0.6 - Date().timeIntervalSince(userRefreshStarted))
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
+            self.userRefresh = .done
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                if self.userRefresh == .done { self.userRefresh = .idle }
+            }
+        }
+    }
+
     func refresh(quiet: Bool = false) {
         if isWorking { return }
         // Coalesce: launch, the disk watcher and the timer can all ask at once.
@@ -372,6 +495,7 @@ final class AppModel: ObservableObject {
                 self.units = result.units
                 self.rememberDrives(result.units)
                 self.trackRebuilds(result.units)
+                self.trackActiveMember(result.units)
                 self.lockedDisks = result.locked
                 self.usbGRAIDs = result.usb
                 if self.selectedID == nil || !result.units.contains(where: { $0.id == self.selectedID }) {
@@ -406,6 +530,7 @@ final class AppModel: ObservableObject {
                 }
                 self.menuHealth = result.units.map(\.health).max { $0.rank < $1.rank }
                 self.lastUpdated = Date()
+                self.finishUserRefresh()
             }
         }
     }
@@ -435,6 +560,10 @@ final class AppModel: ObservableObject {
                 var unit = Unit(path: c.rawPath, bsdNames: [c.bsdName], productName: name,
                                 caps: caps, raid: raid, disks: disks)
                 unit.partitions = partitions(onWholeDisk: c.bsdName)
+                // Only while a RAID 1 copy runs or is paused: 16 one-byte reads of controller RAM.
+                if caps.currentMode == 2, [2, 8].contains(raid.volume(0).status) {
+                    unit.rebuild = readRebuildPosition(dev: dev, caps: caps)
+                }
                 units[caps.uniqueID] = unit
             }
         }

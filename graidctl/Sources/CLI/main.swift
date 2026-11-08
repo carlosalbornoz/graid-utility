@@ -162,6 +162,56 @@ func cmdRebuild(device: String?, sourceBay: Int?, confirmed: Bool, anyProtocol: 
     }
 }
 
+/// Read-only logger for the RAID 1 membership bytes in controller RAM, alongside the reported
+/// volume and port statuses. One line per sample; a CHANGED line whenever anything moves.
+func cmdWatchRAM(device: String?, interval: Double, count: Int?, dumpPorts: Bool, anyProtocol: Bool, verbose: Bool) throws {
+    try requireRoot()
+    if oldConfiguratorRunning() { throw ToolError(oldConfiguratorText) }
+    let (dev, _) = try pickDevice(device, anyProtocol: anyProtocol, verbose: verbose)
+    let addresses = raid1WatchFields.flatMap(\.addresses)
+    let clock = DateFormatter(); clock.dateFormat = "HH:mm:ss"
+    print("watch-ram: read-only (GetRegister 0x50, RAM below 0xE000), every \(interval) s. Ctrl-C to stop.")
+    print("Quit G-RAID Utility while this runs, so the two don't interleave commands.")
+    if dumpPorts {
+        // One-off: both port records (0xC2 bytes each from 0x0000), to find the membership field.
+        let ram = try readRAM(dev: dev, addresses: Array(0x0000..<0x0184))
+        for port in 0..<2 {
+            let base = port * 0xC2
+            print("port \(port) record (0x\(String(format: "%04X", base))):")
+            for row in stride(from: 0, to: 0xC2, by: 16) {
+                let bytes = (row..<min(row + 16, 0xC2)).map { String(format: "%02x", ram[UInt16(base + $0)]!) }
+                print(String(format: "  +%02X  ", row) + bytes.joined(separator: " "))
+            }
+        }
+        fflush(stdout)
+    }
+    var last: [String: String] = [:]
+    var n = 0
+    while count.map({ n < $0 }) ?? true {
+        n += 1
+        let now = clock.string(from: Date())
+        do {
+            let (_, raid, disks) = try fetchAll(dev)
+            let ram = try readRAM(dev: dev, addresses: addresses)
+            var fields: [(String, String)] = [("volume", volumeStatusText(raid.volume(0).status))]
+            for p in disks.validPorts.prefix(2) {
+                fields.append(("bay\(p.index + 1)", "\(diskStatusText(p.status))/order \(String(format: "%02x", p.order))"))
+            }
+            for f in raid1WatchFields { fields.append((f.name, ramFieldText(f, ram))) }
+            print("\(now) " + fields.map { "\($0.0)=\($0.1)" }.joined(separator: "  "))
+            let changed = fields.filter { last[$0.0] != nil && last[$0.0] != $0.1 }
+            if !changed.isEmpty {
+                print("\(now) CHANGED " + changed.map { "\($0.0): \(last[$0.0]!) -> \($0.1)" }.joined(separator: "; "))
+            }
+            for (k, v) in fields { last[k] = v }
+        } catch {
+            print("\(now) ERROR \(error)")
+        }
+        fflush(stdout)
+        if count.map({ n < $0 }) ?? true { Thread.sleep(forTimeInterval: interval) }
+    }
+}
+
 /// Read-only dump of the controller's flash. Reads twice and writes the file only if both
 /// passes match, so a glitchy read can't produce a corrupt backup.
 func cmdFirmwareDump(file: String?, device: String?, size: UInt32, anyProtocol: Bool, verbose: Bool) throws {
@@ -300,6 +350,8 @@ USAGE
   sudo graidctl set-mode <individual|raid0|raid1> [diskN] [--name NAME] --yes-erase-all-data
   sudo graidctl rebuild --from <1|2> [diskN] --yes-overwrite-other-bay
                                              Degraded RAID 1: copy the good bay onto the other one
+  sudo graidctl watch-ram [diskN] [--interval 5] [--count N] [--ports]
+                                             Log RAID 1 membership bytes in controller RAM (read-only)
   sudo graidctl spin-check diskN             Are the drives spinning? (times random reads)
   sudo graidctl firmware-dump [file] [diskN] [--size 0x1F000]
                                              Back up the controller firmware (read-only, read twice)
@@ -332,6 +384,9 @@ simulate = flag("--simulate")
 let confirmed = flag("--yes-erase-all-data")
 let overwriteConfirmed = flag("--yes-overwrite-other-bay")
 let fromBay = option("--from").flatMap { Int($0) }
+let watchInterval = option("--interval").flatMap { Double($0) } ?? 5
+let watchCount = option("--count").flatMap { Int($0) }
+let watchPorts = flag("--ports")
 let setName = option("--name") ?? "G-RAID"
 
 do {
@@ -344,6 +399,8 @@ do {
         let modes: [String: TargetMode] = ["individual": .individual, "raid0": .raid0, "raid1": .raid1]
         guard let m = rest.first.flatMap({ modes[$0.lowercased()] }) else { throw ToolError("set-mode needs one of: individual, raid0, raid1") }
         try cmdSetMode(device: rest.dropFirst().first, mode: m, name: setName, confirmed: confirmed, anyProtocol: anyProto, verbose: verbose)
+    case "watch-ram":
+        try cmdWatchRAM(device: rest.first, interval: max(1, watchInterval), count: watchCount, dumpPorts: watchPorts, anyProtocol: anyProto, verbose: verbose)
     case "rebuild":
         try cmdRebuild(device: rest.first, sourceBay: fromBay, confirmed: overwriteConfirmed, anyProtocol: anyProto, verbose: verbose)
     case "grant-access": try cmdGrantAccess(uidString: option("--uid"), anyProtocol: anyProto)

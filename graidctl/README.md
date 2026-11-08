@@ -6,8 +6,11 @@ Silicon and need no driver, kext or DEXT. They talk to the enclosure's ASMedia b
 the same way the original app does: by reading specific sectors in a specific order
 (see [PROTOCOL.md](PROTOCOL.md)).
 
-> **Status:** status reading is verified on a real G-RAID with Thunderbolt (RAID 0,
-> 2 × HGST 4 TB, macOS 27). Changing the RAID mode has **not** been tried on hardware.
+> **Status:** verified on a real G-RAID with Thunderbolt (2 × HGST 4 TB, macOS 27): status
+> reading, a RAID 0 → RAID 1 mode change, degraded detection and the manual rebuild command.
+> A rebuild running to completion is not yet verified. Back up first; see
+> [TESTING.md](TESTING.md) and the warning about reinserting pulled drives in the
+> [top-level README](../README.md#status).
 
 ## Build
 

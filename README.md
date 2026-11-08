@@ -15,10 +15,25 @@ replacement.
 
 ## Status
 
-Personal project, tested on one G-RAID with Thunderbolt (firmware 140827300211). Status,
-monitoring, eject, speed test and drive sleep are verified on that unit; RAID mode changes and
-drive replacement are built and self-tested but not yet exercised on hardware. Changing the
-RAID mode erases both drives. Back up first.
+Personal project, tested on one G-RAID with Thunderbolt (firmware 140827300211, 2 × 4 TB).
+Verified on that unit:
+
+- Status, monitoring, eject, speed test, drive sleep and the health report
+- Changing the RAID mode (RAID 0 → RAID 1): exact new size, reconnects by itself in seconds
+- Detecting a pulled drive in RAID 1: Degraded status, notification, volume stays readable
+- The manual rebuild command (`graidctl rebuild`): accepted and copying
+
+Not yet verified: a rebuild running to completion, Individual (JBOD) mode, SPAN.
+See [graidctl/TESTING.md](graidctl/TESTING.md) for every result.
+
+**Back up before you use it.** Changing the RAID mode erases both drives, and a rebuild erases
+the drive it copies onto.
+
+**Don't put a pulled drive back into a RAID 1 that was written to while it was out.** In
+testing, the controller marked that drive Blank and then, minutes later and with no command
+sent, switched the volume over to the old drive's data. Everything written while degraded was
+lost silently. Insert a new or blank drive instead, or rebuild from the up-to-date bay with
+`graidctl rebuild` and check which bay that is first.
 
 The tool never writes the controller's flash or memory: the flash erase/write and memory-write
 commands are deliberately not implemented.
