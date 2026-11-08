@@ -100,6 +100,7 @@ enum HealthReport {
         var s = "G-RAID HEALTH REPORT\n"
         s += "Generated \(df.string(from: Date())) by G-RAID Utility \(version)\n\n"
         s += "DEVICE\n"
+        s += "  Name:         \(unit.baseName)\n"
         s += "  Model:        \(unit.model.name)\(unit.model.verified ? "" : " (not yet tested with this utility)")\n"
         s += "  Firmware:     \(unit.caps.firmware)\n"
         s += "  Unique ID:    \(unit.caps.uniqueID)\n"

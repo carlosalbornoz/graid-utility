@@ -113,6 +113,11 @@ struct RenderPreviews {
         let r0 = AppModel(); r0.units = [customUnit(mode: 1, volumeBlocks: tb4 * 2, drives: [(hgst, "PK1334PEHT4U9S", 0, tb4), (hgst, "PK1334PEHNVSSS", 0, tb4)])]; r0.phase = .ready
         render("array-raid0", r0)
         render("array-raid0-dark", r0, dark: true)
+        // Two units with the same array name: the picker tells them apart by their IDs.
+        let r1b = customUnit(mode: 2, volumeBlocks: 7_813_922_816, drives: [(hgst, "PK1334PEHAAAAA", 0, tb4), (hgst, "PK1334PEHBBBBB", 0, tb4)])
+        let twoModel = AppModel(); twoModel.units = [r0.units[0], r1b]; twoModel.phase = .ready
+        render("two-units", twoModel)
+        print("picker labels:", twoModel.units.map(twoModel.pickerLabel).joined(separator: " | "))
         let mis = AppModel(); mis.units = [customUnit(mode: 1, volumeBlocks: 7_700_000_000 * 2, drives: [(hgst, "PK1334PEHT4U9S", 0, tb4), ("ST4000DM004-2CV104", "ZFN1A2B3", 0, 7_700_000_000)])]; mis.phase = .ready
         render("array-mismatch", mis)
         let full = customUnit(mode: 2, volumeBlocks: tb4, drives: [("WDC WD40EFRX-68N32N0", "WD-WCC7K1234567", 0, tb4), ("WDC WD40EFRX-68N32N0", "WD-WCC7K7654321", 0, tb4)])

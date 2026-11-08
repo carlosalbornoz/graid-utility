@@ -181,7 +181,7 @@ struct MenuBarContent: View {
         switch model.phase {
         case .ready:
             ForEach(model.units) { u in
-                Text("\(u.model.name): \(modeText(u.caps.currentMode)), \(u.statusText)")
+                Text("\(model.units.count > 1 ? model.name(of: u) : u.model.name): \(modeText(u.caps.currentMode)), \(u.statusText)")
                 ForEach(u.disks.presentPorts, id: \.index) { p in
                     Text("    Disk \(p.index + 1): \(diskStatusText(p.status))")
                 }

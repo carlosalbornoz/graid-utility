@@ -26,8 +26,9 @@ arm64 targets macOS 13+ and x86_64 targets macOS 14+.
 
 ## The app
 
-Copy `build/G-RAID Utility.app` to `/Applications` and open it. It uses the original
-Configurator's icon and status artwork.
+Copy `build/G-RAID Utility.app` to `/Applications` and open it. Status and warning icons are
+system symbols. The enclosure picture and app icon are G-Technology's, added locally with
+`tools/fetch-artwork.sh` (see [Resources/README.md](Resources/README.md)).
 
 - **Full Disk Access (required):** macOS blocks raw disk reads, even as root, unless the
   app has Full Disk Access. Turn it on for G-RAID Utility in System Settings → Privacy &
@@ -43,6 +44,10 @@ Configurator's icon and status artwork.
   capacity, mode, firmware, name, mounted volumes, Speed Test and Report) and three
   sections on the right, switched in the toolbar or with ⌘1–3. It refreshes every 15 seconds,
   when disks come and go, and with ⌘R.
+  With more than one G-RAID connected, a picker in the toolbar switches between them, like the
+  old Configurator's device pop-up. Each unit is called by its array name ("G-RAID · RAID 0 ·
+  8.00 TB"); two units with the same name get the last digits of their unique ID added, and
+  the same names appear in the menu bar, notifications, Activity and the health report.
   - **Array:** the mode in plain words with its RAID chip and a one-line summary of what it
     means for your data. Each bay is drawn as a 3.5-inch drive whose label shows the vendor
     word (when the model text starts with one), the model, the size as drives are sold

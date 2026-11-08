@@ -581,6 +581,16 @@ func selfTest() -> Bool {
     check("capacity: individual keeps everything", arrayBlocks(.individual, members: [hgst, tb2b]) == hgst + tb2b)
     check("capacity: a member smaller than the reserve gives nothing", arrayBlocks(.raid0, members: [hgst, 0x8000]) == 0)
     check("capacity: unused part of the larger disk", modeCapacity(.raid1, members: [tb2b, hgst]).unused == Double((hgst - tb2b) * 512))
+    let one = unitNames([(id: "68ca4ea78d27834a", arrayName: "Studio", product: "G-RAID with Thunderbolt")])
+    check("names: array name when set", one["68ca4ea78d27834a"] == "Studio")
+    let two = unitNames([(id: "68ca4ea78d27834a", arrayName: "G-RAID", product: "G-RAID with Thunderbolt"),
+                         (id: "1122334455667788", arrayName: "G-RAID", product: "G-RAID with Thunderbolt")])
+    check("names: same names get their ID's last digits", two["68ca4ea78d27834a"] == "G-RAID (834A)" && two["1122334455667788"] == "G-RAID (7788)")
+    let clash = unitNames([(id: "69ca4ea78d27834a", arrayName: "G-RAID", product: "P"), (id: "6aca4ea78d17834a", arrayName: "G-RAID", product: "P")])
+    check("names: longer suffix when the last digits match", clash["69ca4ea78d27834a"] == "G-RAID (27834A)" && clash["6aca4ea78d17834a"] == "G-RAID (17834A)")
+    let ind = unitNames([(id: "68ca4ea78d27834a", arrayName: "", product: "G-RAID with Thunderbolt"),
+                         (id: "1122334455667788", arrayName: "Backup", product: "G-RAID with Thunderbolt")])
+    check("names: Individual mode uses the product name", ind["68ca4ea78d27834a"] == "G-RAID with Thunderbolt" && ind["1122334455667788"] == "Backup")
     check("replace: missing copy asks for a drive", computeReplaceStep(mode: 2, volumeStatus: 1, bays: [0, nil]) == .insert(bay: 1))
     check("replace: failed drive must come out first", computeReplaceStep(mode: 2, volumeStatus: 1, bays: [8, 0]) == .remove(bay: 0))
     check("replace: a foreign drive waits for the copy", computeReplaceStep(mode: 2, volumeStatus: 1, bays: [0, 5]) == .waiting(bay: 1))
@@ -695,6 +705,24 @@ func modeCapacity(_ mode: TargetMode, members: [UInt64], bytesPerBlock: UInt64 =
     let usable = Double(arrayBlocks(mode, members: members) * bytesPerBlock)
     let unused = mode == .individual ? 0 : Double((members.reduce(0, +) - smallest * UInt64(members.count)) * bytesPerBlock)
     return (usable, unused)
+}
+
+/// What to call each connected unit: its array name (chosen in Change RAID Mode and stored on the
+/// unit), or the product name in Individual mode, which has none. When two units would share a
+/// name, each gets the last four digits of its unique ID, which never change (unlike disk numbers).
+func unitNames(_ units: [(id: String, arrayName: String, product: String)]) -> [String: String] {
+    func base(_ u: (id: String, arrayName: String, product: String)) -> String {
+        let n = u.arrayName.trimmingCharacters(in: .whitespaces)
+        return n.isEmpty ? u.product : n
+    }
+    var out: [String: String] = [:]
+    for group in Dictionary(grouping: units, by: { base($0).lowercased() }).values {
+        guard group.count > 1 else { out[group[0].id] = base(group[0]); continue }
+        // Four digits, or more if those happen to match.
+        let length = (4...16).first { k in Set(group.map { $0.id.suffix(k) }).count == group.count } ?? 16
+        for u in group { out[u.id] = "\(base(u)) (\(u.id.suffix(length).uppercased()))" }
+    }
+    return out
 }
 
 /// Where replacing a RAID 1 drive stands, read from what the controller reports. The controller

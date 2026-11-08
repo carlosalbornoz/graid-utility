@@ -365,6 +365,18 @@ drive goes into the empty bay of a degraded RAID 1, so the app mostly guides and
   packet is known: a normal ModeChange with payload[0x0A] = 0x81 and the source port first at
   0x1C. It needs spare disks to test, and the same "destination is erased" confirmation.
 
+## Several G-RAIDs at once — names fixed 2026-11-08
+
+The 2017 Configurator listed every connected unit with a device pop-up (`devicePopUp`,
+`DeviceArray`, `gDevNum`, `gSelectDev`) and refused firmware updates with more than one
+connected. This app already tracked units separately (keyed by the unique ID) with a Device
+picker, and the CLI refuses to guess between two. What was missing was telling them apart:
+every unit was "G-RAID with Thunderbolt" in the picker, menu bar and notifications. Now
+`unitNames` (core, self-tested) names each unit by its array name (product name in Individual
+mode); duplicates get the last digits of the unique ID, as many as it takes to differ. Used in
+the picker ("G-RAID · RAID 0 · 8.00 TB"), window title, menu bar, events and notifications, and
+the report's new Name line. Not tested with two real units (only one available).
+
 ## Feature ideas from the firmware review (2026-11-08)
 
 In rough order of value. The first ones need no new controller commands.

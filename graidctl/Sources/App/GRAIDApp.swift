@@ -1,24 +1,33 @@
 import AppKit
 import SwiftUI
 
-// MARK: - Assets from the original Configurator
+// MARK: - Enclosure picture
 
+/// The enclosure picture from G-Technology's public icon pack (tools/fetch-artwork.sh). It isn't
+/// in the repository, so without it the app shows the system drive symbol.
 func asset(_ name: String) -> Image {
     if let url = Bundle.main.url(forResource: name, withExtension: "png"), let img = NSImage(contentsOf: url) {
         return Image(nsImage: img)
     }
-    // The artwork isn't in the repository (tools/fetch-artwork.sh); fall back to a system symbol.
-    return Image(systemName: name.hasPrefix("Img_RaidStatus") ? "circle.fill" : "externaldrive")
+    return Image(systemName: "externaldrive.fill")
+}
+
+/// The enclosure with a small lock in the corner, for the Allow Access screen.
+struct LockedDrive: View {
+    var body: some View {
+        asset("Img_Device_GRAID").resizable().scaledToFit().foregroundStyle(.secondary)
+            .frame(width: 120, height: 84)
+            .overlay(alignment: .bottomTrailing) {
+                Image(systemName: "lock.circle.fill").font(.system(size: 34))
+                    .symbolRenderingMode(.palette).foregroundStyle(.white, brandBlue)
+                    .background(Circle().fill(Color(nsColor: .windowBackgroundColor)).padding(-2))
+                    .offset(x: 6, y: 6)
+            }
+            .accessibilityHidden(true)
+    }
 }
 
 extension Unit.Health {
-    var image: Image {
-        switch self {
-        case .good: return asset("Img_RaidStatus_Good")
-        case .attention: return asset("Img_RaidStatus_Attn")
-        case .bad: return asset("Img_RaidStatus_Bad")
-        }
-    }
     var tint: Color {
         switch self {
         case .good: return .green
@@ -34,7 +43,7 @@ struct NoDeviceView: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         VStack(spacing: 14) {
-            asset("Img_GR_Icon").resizable().frame(width: 96, height: 96).opacity(0.35)
+            asset("Img_Device_GRAID").resizable().scaledToFit().foregroundStyle(.secondary).frame(height: 96).opacity(0.35)
             Text("No G-RAID connected").font(.title3.weight(.semibold))
             Text("Connect the drive and switch it on. It appears here automatically.")
                 .foregroundStyle(.secondary)
@@ -77,7 +86,7 @@ struct AccessView: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         VStack(spacing: 14) {
-            asset("Img_Authentication_Lock").resizable().scaledToFit().frame(height: 72)
+            LockedDrive()
             Text("Allow access to the G-RAID").font(.title3.weight(.semibold))
             Text("The utility talks to the G-RAID controller by reading special sectors from the disk, which needs an administrator password. Only G-RAID disks are opened up, read-only and for your account, until the drive is disconnected.")
                 .multilineTextAlignment(.center)
@@ -248,7 +257,8 @@ struct ChangeModeSheet: View {
         let mode = form.choice ?? .raid1
         return VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 12) {
-                asset("Img_RaidStatus_Bad").resizable().frame(width: 52, height: 52)
+                Image(systemName: "exclamationmark.triangle.fill").symbolRenderingMode(.multicolor)
+                    .font(.system(size: 40)).frame(width: 52, height: 52).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Erase everything on this G-RAID?").font(.title2.weight(.semibold))
                     Text("Switching from \(unit.currentTarget?.label ?? modeText(unit.caps.currentMode)) to \(mode.label) deletes all data on both disks. This can't be undone.")

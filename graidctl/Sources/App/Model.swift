@@ -28,7 +28,13 @@ struct Unit: Identifiable {
     var hasMountedPartitions: Bool { partitions.contains(where: \.isMounted) }
 
     var model: DeviceModel { DeviceModel.identify(caps) }
-    var snapshot: UnitSnapshot { UnitSnapshot(id: id, name: model.name, caps: caps, raid: raid, disks: disks) }
+    func snapshot(named name: String) -> UnitSnapshot { UnitSnapshot(id: id, name: name, caps: caps, raid: raid, disks: disks) }
+
+    /// The array name, or the product name in Individual mode (see `unitNames`).
+    var baseName: String {
+        let n = caps.currentMode == 0 ? "" : caps.raidSetName
+        return n.trimmingCharacters(in: .whitespaces).isEmpty ? model.name : n
+    }
 
     enum Health { case good, attention, bad
         var rank: Int { self == .good ? 0 : self == .attention ? 1 : 2 } }
@@ -205,6 +211,17 @@ final class AppModel: ObservableObject {
 
     var selected: Unit? { units.first { $0.id == selectedID } ?? units.first }
 
+    /// Each unit's name, told apart when two share one (`unitNames`).
+    static func names(_ units: [Unit]) -> [String: String] {
+        unitNames(units.map { (id: $0.id, arrayName: $0.caps.currentMode == 0 ? "" : $0.caps.raidSetName, product: $0.model.name) })
+    }
+    func name(of unit: Unit) -> String { Self.names(units)[unit.id] ?? unit.baseName }
+
+    /// For the device picker: "G-RAID · RAID 0 · 8.00 TB".
+    func pickerLabel(_ unit: Unit) -> String {
+        [name(of: unit), unit.currentTarget?.chip ?? modeText(unit.caps.currentMode), unit.capacityText].joined(separator: " · ")
+    }
+
     func start() {
         guard watcher == nil else { return }
         recentEvents = eventLog.load()
@@ -241,7 +258,8 @@ final class AppModel: ObservableObject {
 
     /// Turn the difference between two scans into events, log them and notify.
     private func record(scan: (units: [Unit], locked: [String], usb: [Candidate], present: Set<String>, thunderbolt: [String])) {
-        let now = Dictionary(uniqueKeysWithValues: scan.units.map { ($0.id, $0.snapshot) })
+        let names = Self.names(scan.units)
+        let now = Dictionary(uniqueKeysWithValues: scan.units.map { ($0.id, $0.snapshot(named: names[$0.id] ?? $0.baseName)) })
         guard let old = lastSnapshots else { lastSnapshots = now; return }   // first scan is the baseline
         var gone = Set<String>()
         var carried = now
@@ -484,7 +502,7 @@ final class AppModel: ObservableObject {
         guard let unit = units.first(where: { $0.bsdNames.contains(bsd) }), !ejectedDisks.contains(bsd) else { return }
         ejectedVolumes = unit.volumes.map(\.bsd)   // volumes only: system partitions are never remounted
         ejectedDisks.insert(bsd)
-        log([GRAIDEvent(unitID: unit.id, unitName: unit.model.name, category: .connection, severity: .info,
+        log([GRAIDEvent(unitID: unit.id, unitName: name(of: unit), category: .connection, severity: .info,
                         title: "Ejected", detail: "From another app, such as Finder")])
         if unit.bsdNames.allSatisfy(ejectedDisks.contains) {
             units.removeAll { $0.id == unit.id }
@@ -527,7 +545,7 @@ final class AppModel: ObservableObject {
                     message = "The volumes were unmounted, but the eject didn't finish: \(why). It's still safe to unplug."
                 }
             }
-            log([GRAIDEvent(unitID: unit.id, unitName: unit.model.name, category: .connection, severity: .info,
+            log([GRAIDEvent(unitID: unit.id, unitName: name(of: unit), category: .connection, severity: .info,
                             title: "Ejected", detail: unit.volumes.map(\.name).joined(separator: ", "))])
             isWorking = false
             units.removeAll { $0.id == unit.id }
@@ -634,6 +652,7 @@ final class AppModel: ObservableObject {
     func changeMode(unit: Unit, mode: TargetMode, name: String) {
         isWorking = true
         message = nil
+        let unitName = self.name(of: unit)
         Task.detached {
             var text: String
             var succeeded = false
@@ -651,7 +670,7 @@ final class AppModel: ObservableObject {
                     text = "The G-RAID is resetting to \(mode.label). Wait about 30 seconds for it to reconnect, then erase it in Disk Utility to create a volume."
                 }
                 succeeded = true
-                let event = GRAIDEvent(unitID: unit.id, unitName: unit.model.name, category: .config, severity: .info,
+                let event = GRAIDEvent(unitID: unit.id, unitName: unitName, category: .config, severity: .info,
                                        title: "RAID mode change sent", detail: "\(unit.currentTarget?.label ?? modeText(unit.caps.currentMode)) → \(mode.label), named “\(name)”")
                 await MainActor.run { self.log([event]) }
             } catch {

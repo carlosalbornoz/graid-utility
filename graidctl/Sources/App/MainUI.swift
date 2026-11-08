@@ -183,7 +183,7 @@ struct ContentView: View {
         .frame(width: 940)   // fixed: the window always fits the content
         // No window-wide tint: standard buttons keep macOS's own high-contrast styling. Blue is
         // applied only where the app draws data or selection.
-        .navigationTitle(model.phase == .ready ? (model.selected?.model.name ?? "G-RAID") : "G-RAID Utility")
+        .navigationTitle(model.phase == .ready ? (model.selected.map { model.units.count > 1 ? model.name(of: $0) : $0.model.name } ?? "G-RAID") : "G-RAID Utility")
         .navigationSubtitle(subtitle)
         .toolbar { MainToolbar(model: model) }
         .onAppear {
@@ -223,9 +223,10 @@ struct MainToolbar: ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             if model.units.count > 1 {
                 Picker("Device", selection: $model.selectedID) {
-                    ForEach(model.units) { u in Text("\(u.productName) (\(u.bsdNames.first ?? ""))").tag(Optional(u.id)) }
+                    ForEach(model.units) { u in Text(model.pickerLabel(u)).tag(Optional(u.id)) }
                 }
-                .frame(width: 200)
+                .fixedSize()
+                .help("Choose which G-RAID to show")
             }
             if model.phase == .ready && !model.lockedDisks.isEmpty {
                 Button("Allow Access…") { model.requestAccess() }.disabled(model.isWorking)
