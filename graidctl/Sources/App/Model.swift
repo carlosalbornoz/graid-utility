@@ -343,7 +343,7 @@ final class AppModel: ObservableObject {
                 let oldBay = old.map { "Bay \($0.index + 1)" } ?? "the other bay"
                 log([GRAIDEvent(unitID: u.id, unitName: name(of: u), category: .array, severity: .critical,
                                 title: "The G-RAID switched to the other drive's copy",
-                                detail: "It's now using Bay \(now.bay + 1) (\(now.serial)) instead of \(oldBay). Changes made while Bay \(now.bay + 1) was out may be missing.")])
+                                detail: "It's now using Bay \(now.bay + 1) (serial \(now.serial)) instead of \(oldBay). Changes made while Bay \(now.bay + 1) was out may be missing.")])
                 UserDefaults.standard.set(Date(), forKey: swapKey)
             }
             UserDefaults.standard.set(now.serial, forKey: key)

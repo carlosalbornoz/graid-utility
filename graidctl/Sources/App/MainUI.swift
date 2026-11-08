@@ -835,10 +835,22 @@ struct DriveBay: View {
             if let split {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(split.vendor ?? " ").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Text(split.model).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.tail)
-                    Text(identity?.serial ?? "").font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+                    // Labelled, so the model and serial can't be mistaken for each other.
+                    Grid(alignment: .leading, horizontalSpacing: 5, verticalSpacing: 2) {
+                        GridRow {
+                            Text("Model").font(.caption2)
+                            Text(split.model).font(.caption2.monospaced()).lineLimit(1).truncationMode(.tail)
+                        }
+                        if let serial = identity?.serial, !serial.isEmpty {
+                            GridRow {
+                                Text("Serial").font(.caption2)
+                                Text(serial).font(.caption2.monospaced()).lineLimit(1).truncationMode(.middle)
+                            }
+                        }
+                    }
+                    .foregroundStyle(.tertiary)
                 }
-                .frame(width: 150, alignment: .leading)
+                .frame(width: 180, alignment: .leading)
                 if let r = copyProgress {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(percentText(r.fraction)).font(.system(size: 26, weight: .semibold)).monospacedDigit()

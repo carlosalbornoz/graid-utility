@@ -106,7 +106,7 @@ struct ReplaceDriveSheet: View {
     private var removeRow: some View {
         let failed = unit?.disks.presentPorts.first { $0.index == target && [6, 8].contains($0.status) }
         let detail = state(.remove) == .done ? "Removed."
-            : failed.map { "\($0.model) · \($0.serial) · \(diskStatusText($0.status))" } ?? "The drive the controller marked as failed."
+            : failed.map { "Model \($0.model) · Serial \($0.serial) · \(diskStatusText($0.status))" } ?? "The drive the controller marked as failed."
         return StepRow(number: 1, title: "Remove the failed drive from Bay \(target + 1)", detail: detail, state: state(.remove))
     }
 
@@ -128,7 +128,7 @@ struct ReplaceDriveSheet: View {
         }
         if case .needsRebuild? = step {
         } else if state(.insert) == .done, let p = unit?.disks.presentPorts.first(where: { $0.index == target }) {
-            detail = "\(p.model) · \(p.serial)"
+            detail = "Model \(p.model) · Serial \(p.serial)"
         }
         let title: String = {
             if case .needsRebuild? = step { return "Rebuild Bay \(target + 1) from Bay \(source + 1)" }
@@ -210,11 +210,11 @@ struct ReplaceDriveSheet: View {
                 Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
                     GridRow {
                         Text("Keep").foregroundStyle(.secondary)
-                        Text("Bay \(source + 1) · \(keep?.model ?? "") · \(keep?.serial ?? "")")
+                        Text("Bay \(source + 1) · Model \(keep?.model ?? "") · Serial \(keep?.serial ?? "")")
                     }
                     GridRow {
                         Text("Erase").foregroundStyle(.red)
-                        Text("Bay \(target + 1) · \(erase?.model ?? "") · \(erase?.serial ?? "")")
+                        Text("Bay \(target + 1) · Model \(erase?.model ?? "") · Serial \(erase?.serial ?? "")")
                     }
                 }
                 .font(.callout)

@@ -290,7 +290,7 @@ struct ChangeModeSheet: View {
             DisclosureGroup(isExpanded: $form.showDisks) {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(unit.disks.presentPorts, id: \.index) { p in
-                        Text("Disk \(p.index + 1): \(p.model) · S/N \(p.serial) · \(formatBytes(p.capacityBytes))")
+                        Text("Disk \(p.index + 1): Model \(p.model) · Serial \(p.serial) · \(formatBytes(p.capacityBytes))")
                             .textSelection(.enabled)
                     }
                 }
