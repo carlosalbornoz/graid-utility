@@ -182,13 +182,25 @@ enum HealthReport {
         panel.message = "Save as PDF, or change the extension to .txt for plain text."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let text = Self.text(unit: unit, events: events)
+        let saved: Bool
         if url.pathExtension.lowercased() == "txt" {
-            try? text.write(to: url, atomically: true, encoding: .utf8)
+            saved = (try? text.write(to: url, atomically: true, encoding: .utf8)) != nil
         } else {
-            _ = writePDF(text, to: url)
+            saved = writePDF(text, to: url)
         }
+        guard saved else { return showSaveFailure("The health report wasn't saved", url: url) }
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
+}
+
+/// Says that a file the user chose to save wasn't written.
+@MainActor func showSaveFailure(_ title: String, url: URL, error: Error? = nil) {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = title
+    alert.informativeText = error.map { "\($0.localizedDescription)" }
+        ?? "Couldn't write “\(url.lastPathComponent)”. Check that the folder can be written to, and try again."
+    alert.runModal()
 }
 
 // MARK: - Speed test
@@ -225,10 +237,12 @@ final class SpeedTest: ObservableObject {
 
     init(volume: MountedVolume) { self.volume = volume }
 
-    var freeBytes: Double {
-        Double((try? volume.url.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity) ?? 0)
+    /// nil when the volume's free space can't be read.
+    var freeBytes: Double? {
+        (try? volume.url.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity).map(Double.init)
     }
-    var enoughSpace: Bool { freeBytes > Double(sizeGB) * 1.1e9 + 1e9 }
+    /// Unknown free space doesn't block the test: a full disk makes the write fail and say so.
+    var enoughSpace: Bool { freeBytes.map { $0 > Double(sizeGB) * 1.1e9 + 1e9 } ?? true }
     var running: Bool { stage == .writing || stage == .reading }
 
     func cancel() { cancelled = true }
@@ -331,7 +345,7 @@ struct SpeedTestSheet: View {
                         }
                         .labelsHidden().pickerStyle(.segmented).frame(width: 180)
                         Spacer()
-                        Text("\(formatBytes(test.freeBytes)) free").foregroundStyle(.secondary)
+                        if let free = test.freeBytes { Text("\(formatBytes(free)) free").foregroundStyle(.secondary) }
                     }
                     if !test.enoughSpace {
                         Label("Not enough free space for this test size.", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)

@@ -499,6 +499,7 @@ struct ArrayTab: View {
                             // Its own anchor: two sheets on one view don't both present on older macOS.
                             .sheet(isPresented: $sheet.replaceOpen) {
                                 ReplaceDriveSheet(unitID: unit.id) { sheet.replaceOpen = false }.environmentObject(model)
+                                    .id(unit.id)
                             }
                     }
                 }
@@ -510,9 +511,17 @@ struct ArrayTab: View {
         }
         .sheet(isPresented: $sheet.open) {
             ChangeModeSheet(unit: unit, preview: sheet.choice.map { (1, $0, false) }) { mode, name in
-                sheet.open = false
-                model.changeMode(unit: unit, mode: mode, name: name)
+                if model.changeMode(unit: unit, mode: mode, name: name) { sheet.open = false }
             } cancel: { sheet.open = false }
+            // A new unit means a new sheet: nothing confirmed for the old one carries over.
+            .id(unit.id)
+        }
+        // The shown unit changed under an open sheet (the selected G-RAID went away and another
+        // took its place): close the sheets rather than retarget a confirmation.
+        .onChange(of: unit.id) { _ in
+            sheet.open = false
+            sheet.replaceOpen = false
+            sheet.whyDisabled = false
         }
     }
 

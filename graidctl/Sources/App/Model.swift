@@ -176,7 +176,8 @@ final class AppModel: ObservableObject {
     @Published var speedTest: SpeedTest?
 
     func startSpeedTest(_ unit: Unit, volume: MountedVolume? = nil) {
-        guard let v = volume ?? unit.writableVolumes.first else { return }
+        // One at a time: a second test would share the first one's temporary file.
+        guard speedTest == nil, let v = volume ?? unit.writableVolumes.first else { return }
         let test = SpeedTest(volume: v)
         let key = "lastSpeedTest." + unit.id
         test.onFinish = { w, r, size in
@@ -218,6 +219,7 @@ final class AppModel: ObservableObject {
     let eventLog = EventLog()
     private var lastSnapshots: [String: UnitSnapshot]?
     private var missCount: [String: Int] = [:]
+    private var lastDiskNames: [String: [String]] = [:]
 
     private var watcher: DiskWatcher?
     private var pendingRefresh: DispatchWorkItem?
@@ -247,6 +249,7 @@ final class AppModel: ObservableObject {
 
     private func rescheduleTimer() {
         timer?.invalidate()
+        guard watcher != nil else { return }   // polling starts with start(), not before (or in previews)
         let interval: TimeInterval = windowVisible ? 15 : 60
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -274,19 +277,23 @@ final class AppModel: ObservableObject {
     private func record(scan: (units: [Unit], locked: [String], blocked: [String], usb: [Candidate], present: Set<String>, thunderbolt: [String])) {
         let names = Self.names(scan.units)
         let now = Dictionary(uniqueKeysWithValues: scan.units.map { ($0.id, $0.snapshot(named: names[$0.id] ?? $0.baseName)) })
-        guard let old = lastSnapshots else { lastSnapshots = now; return }   // first scan is the baseline
+        guard let old = lastSnapshots else {   // first scan is the baseline
+            lastSnapshots = now
+            rememberDiskNames(scan.units, keeping: [])
+            return
+        }
         var gone = Set<String>()
         var carried = now
         for (id, snap) in old where now[id] == nil {
+            // The disks it was last seen on. Not looked up in `units`: ejecting removes it from there.
+            let bsds = lastDiskNames[id] ?? []
             // Ejected on purpose and still attached: keep its last state, no "Disconnected".
-            if let unit = units.first(where: { $0.id == id }),
-               unit.bsdNames.allSatisfy({ ejectedDisks.contains($0) && scan.present.contains($0) }) {
+            if !bsds.isEmpty, bsds.allSatisfy({ ejectedDisks.contains($0) && scan.present.contains($0) }) {
                 carried[id] = snap
                 continue
             }
             // Confirm a disappearance: its disk is gone, or it failed to answer twice in a row.
-            let unit = units.first { $0.id == id }
-            let diskGone = unit.map { !$0.bsdNames.contains(where: scan.present.contains) } ?? true
+            let diskGone = !bsds.contains(where: scan.present.contains)
             missCount[id, default: 0] += 1
             if diskGone || missCount[id]! >= 2 { gone.insert(id) } else { carried[id] = snap }
         }
@@ -294,7 +301,15 @@ final class AppModel: ObservableObject {
         for id in gone { missCount[id] = nil }
         let events = diffSnapshots(old: old, new: now, confirmedGone: gone)
         lastSnapshots = carried
+        rememberDiskNames(scan.units, keeping: Set(carried.keys))
         log(events)
+    }
+
+    /// Each unit's disks as last seen, kept for as long as its snapshot is carried forward.
+    private func rememberDiskNames(_ seen: [Unit], keeping ids: Set<String>) {
+        var names = lastDiskNames.filter { ids.contains($0.key) }
+        for unit in seen { names[unit.id] = unit.bsdNames }
+        lastDiskNames = names
     }
 
     func log(_ events: [GRAIDEvent]) {
@@ -814,7 +829,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func changeMode(unit: Unit, mode: TargetMode, name: String) {
+    /// Returns false, doing nothing, while another operation is running.
+    @discardableResult
+    func changeMode(unit: Unit, mode: TargetMode, name: String) -> Bool {
+        guard !isWorking else { return false }
         isWorking = true
         message = nil
         let unitName = self.name(of: unit)
@@ -850,6 +868,7 @@ final class AppModel: ObservableObject {
                 self.scheduleRefresh()
             }
         }
+        return true
     }
 }
 

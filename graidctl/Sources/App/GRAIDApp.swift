@@ -6,11 +6,15 @@ import SwiftUI
 /// The enclosure picture from G-Technology's public icon pack (tools/fetch-artwork.sh). It isn't
 /// in the repository, so without it the app shows the system drive symbol.
 func asset(_ name: String) -> Image {
+    // Loaded once: views ask for it on every redraw.
+    if let img = assetCache.object(forKey: name as NSString) { return Image(nsImage: img) }
     if let url = Bundle.main.url(forResource: name, withExtension: "png"), let img = NSImage(contentsOf: url) {
+        assetCache.setObject(img, forKey: name as NSString)
         return Image(nsImage: img)
     }
     return Image(systemName: "externaldrive.fill")
 }
+private let assetCache = NSCache<NSString, NSImage>()
 
 /// The enclosure with a small lock in the corner, for the Allow Access screen.
 struct LockedDrive: View {

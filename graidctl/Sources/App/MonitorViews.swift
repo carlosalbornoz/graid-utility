@@ -23,9 +23,20 @@ struct SettingsView: View {
         @Published var loginNeedsApproval = LoginItem.needsApproval
         @Published var diskSleep: Int?
         private var checkingDiskSleep = false
+        private var checkingUnlock = false
         func reload() {
-            unlock = UnlockService.status()
             loginNeedsApproval = LoginItem.needsApproval
+            // Checks two code signatures: in the background, as this runs every few seconds.
+            if !checkingUnlock {
+                checkingUnlock = true
+                DispatchQueue.global(qos: .utility).async {
+                    let state = UnlockService.status()
+                    DispatchQueue.main.async {
+                        self.checkingUnlock = false
+                        if self.unlock != state { self.unlock = state }
+                    }
+                }
+            }
             // pmset is a subprocess: run it in the background, never during a view update.
             guard !checkingDiskSleep else { return }
             checkingDiskSleep = true
@@ -44,12 +55,16 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Monitor in the background", isOn: $monitor)
-                    .onChange(of: monitor) { on in
-                        if let e = LoginItem.set(on) { svc.error = "Couldn't change the login item: \(e)" }
-                        if on { Notifier.requestPermission() }
-                        svc.reload()
+                // Acts only on the user's click, like the same switch in first-run setup.
+                Toggle("Monitor in the background", isOn: Binding(get: { monitor }, set: { on in
+                    if let e = LoginItem.set(on) {
+                        svc.error = "Couldn't change the login item: \(e)"
+                        if on { svc.reload(); return }   // stays off: it wouldn't open at login
                     }
+                    monitor = on
+                    if on { Notifier.requestPermission() }
+                    svc.reload()
+                }))
                 Text("Shows a G-RAID icon in the menu bar, keeps checking after you close the window, and opens at login. Off: the app only checks while its window is open.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Toggle("Let the drives sleep when the G-RAID isn't in use", isOn: $letDrivesSleep)
@@ -285,8 +300,11 @@ struct HistoryView: View {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.nameFieldStringValue = "G-RAID events.csv"
-        if panel.runModal() == .OK, let url = panel.url {
-            try? EventLog.csv(model.recentEvents).write(to: url, atomically: true, encoding: .utf8)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try EventLog.csv(model.recentEvents).write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            showSaveFailure("The events weren't exported", url: url, error: error)
         }
     }
 }

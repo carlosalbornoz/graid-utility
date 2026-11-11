@@ -297,8 +297,13 @@ struct SetupView: View {
                  detail: "A menu bar icon, and a notification if a drive fails or goes missing. Opens at login.") {
             // Acts only on the user's click, not when Settings changes the same preference.
             Toggle("Watch in the background", isOn: Binding(get: { monitor }, set: { on in
+                if let e = LoginItem.set(on) {
+                    setup.problem = "Couldn't change the login item: \(e)"
+                    if on { return }   // stays off: it wouldn't open at login
+                } else if on && LoginItem.needsApproval {
+                    setup.problem = "Allow G-RAID Utility in System Settings › General › Login Items so it opens at login."
+                }
                 monitor = on
-                if let e = LoginItem.set(on) { setup.problem = "Couldn't change the login item: \(e)" }
                 if on { Notifier.requestPermission() }
             }))
             .toggleStyle(.switch).labelsHidden()
