@@ -103,6 +103,7 @@ func cmdSetMode(device: String?, mode: TargetMode, name: String, confirmed: Bool
     try requireRoot()
     let (dev, cand) = try pickDevice(device, anyProtocol: anyProtocol, verbose: verbose)
     let (caps, _, disks) = try fetchAll(dev)
+    if let problem = controllerProblem(caps: caps) { throw ToolError(problem) }
     if let problem = modeChangeProblem(mode: mode, name: name, disks: disks) { throw ToolError(problem) }
 
     print("Current mode: \(modeText(caps.currentMode))")
@@ -137,6 +138,7 @@ func cmdRebuild(device: String?, sourceBay: Int?, confirmed: Bool, anyProtocol: 
     let source = bay - 1
     let (dev, cand) = try pickDevice(device, anyProtocol: anyProtocol, verbose: verbose)
     let (caps, raid, disks) = try fetchAll(dev)
+    if let problem = controllerProblem(caps: caps) { throw ToolError(problem) }
     if let problem = rebuildProblem(caps: caps, raid: raid, disks: disks, source: source) { throw ToolError(problem) }
     let present = disks.presentPorts
     let src = present.first { $0.index == source }!, dst = present.first { $0.index == 1 - source }!
@@ -280,6 +282,12 @@ func cmdUnlockDaemon(uidString: String?) throws {
     }
 
     var lastNeedsFDA = false
+    /// How many passes in a row each disk failed to answer as a G-RAID. After `probeLimit` the
+    /// disk is left alone until it reconnects: another external SATA disk would otherwise be
+    /// probed every 30 s for ever, and every probe also sends commands to the G-RAID beside it
+    /// (keeping its drives awake, and cutting across the app's own commands).
+    var misses: [String: Int] = [:]
+    let probeLimit = 4
 
     func pass(_ reason: String) {
         // Any candidate we can't open with EPERM means this daemon lacks Full Disk Access.
@@ -291,6 +299,11 @@ func cmdUnlockDaemon(uidString: String?) throws {
         }
         lastNeedsFDA = !blocked.isEmpty
         let unlocked = blocked.isEmpty ? grantAccess(uid: uid, anyProtocol: false).map { $0.candidate.bsdName } : []
+        if blocked.isEmpty {
+            for c in candidates {
+                if unlocked.contains(c.bsdName) { misses[c.bsdName] = nil } else { misses[c.bsdName, default: 0] += 1 }
+            }
+        }
         writeStatus([
             "time": ISO8601DateFormatter().string(from: Date()),
             "reason": reason,
@@ -306,25 +319,29 @@ func cmdUnlockDaemon(uidString: String?) throws {
     /// the service is waiting for Full Disk Access so it notices as soon as it's granted.
     func passIfNeeded(_ reason: String) {
         if lastNeedsFDA { pass(reason); return }
-        let pending = candidateDisks().contains { c in
+        let candidates = candidateDisks()
+        misses = misses.filter { m in candidates.contains { $0.bsdName == m.key } }   // forget unplugged disks
+        let pending = candidates.contains { c in
             var st = stat()
-            return stat(c.rawPath, &st) == 0 && st.st_uid != uid
+            return stat(c.rawPath, &st) == 0 && st.st_uid != uid && misses[c.bsdName, default: 0] < probeLimit
         }
         if pending { pass(reason) }
     }
 
     pass("start")
-    let session = DASessionCreate(kCFAllocatorDefault)!
+    guard let session = DASessionCreate(kCFAllocatorDefault) else { throw ToolError("couldn't start a DiskArbitration session") }
     var debounce: DispatchWorkItem?
-    let onAppear: () -> Void = {
+    let onAppear: (String?) -> Void = { bsd in
+        if let bsd { misses[bsd] = nil }   // a disk that just appeared gets a fresh set of tries
         debounce?.cancel()
         let item = DispatchWorkItem { passIfNeeded("disk appeared") }
         debounce = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: item)
     }
     let box = Unmanaged.passRetained(onAppear as AnyObject)
-    DARegisterDiskAppearedCallback(session, nil, { _, ctx in
-        (Unmanaged<AnyObject>.fromOpaque(ctx!).takeUnretainedValue() as! () -> Void)()
+    DARegisterDiskAppearedCallback(session, nil, { disk, ctx in
+        let bsd = DADiskGetBSDName(disk).map { String(cString: $0) }
+        (Unmanaged<AnyObject>.fromOpaque(ctx!).takeUnretainedValue() as! (String?) -> Void)(bsd)
     }, box.toOpaque())
     DASessionScheduleWithRunLoop(session, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
     Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in passIfNeeded("periodic") }

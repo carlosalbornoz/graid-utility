@@ -234,7 +234,7 @@ final class Device {
         var bs: UInt32 = 0
         let DKIOCGETBLOCKSIZE: UInt = 0x4004_6418
         if ioctl(fd, DKIOCGETBLOCKSIZE, &bs) == 0, bs != 0, bs != UInt32(sectorSize) {
-            close(fd); free(buf)
+            // No close or free here: every property is set, so deinit runs and does both.
             throw ToolError("\(path) uses \(bs)-byte blocks; this protocol needs 512-byte sectors")
         }
     }
@@ -299,6 +299,10 @@ final class Device {
     /// Last ack sector per opcode, for diagnostics.
     var lastAcks: [UInt8: [UInt8]] = [:]
 
+    /// The opcode of the last command whose whole packet reached the controller. An error
+    /// thrown after that came from reading the reply, not from sending.
+    private(set) var sentOpcode: UInt8?
+
     /// Send a command and wait for a final ack. Retries up to 3 times like the original
     /// app, but stops early on a timeout (0xF2), as the app does.
     /// One command at a time per process: interleaved packets from two threads would corrupt
@@ -315,6 +319,7 @@ final class Device {
             try readSector(ackLBA)
             let baseline = sector
             try send(cmd)
+            sentOpcode = cmd.command[0]
             var (st, sec) = try readAck(timeout: cmd.timeout, echo: echo, baseline: baseline, unchangedGrace: grace)
             // "In process": keep reading the ack sector until it settles.
             let settle = Date().addingTimeInterval(cmd.timeout)
@@ -570,6 +575,9 @@ func selfTest() -> Bool {
         let payload = modeChangePayload(mode: .raid1, name: "MIRROR", disks: d3)
         let outcome = try? performModeChange(dev: sdev, bsdNames: [], payload: payload)
         check("simulator: mode change accepted", outcome == .accepted)
+        check("device: remembers the last command fully sent", sdev.sentOpcode == 0xB0)
+        check("guard: known firmware, same enclosure is allowed", controllerProblem(caps: c3, expectedID: c3.uniqueID) == nil)
+        check("guard: a different enclosure on the same disk is refused", controllerProblem(caps: c3, expectedID: "1122334455667788") != nil)
         if let (c4, r4, _) = try? fetchAll(sdev) {
             check("simulator: now RAID 1 named MIRROR", c4.currentMode == 2 && c4.raidSetName == "MIRROR")
             check("simulator: RAID 1 size follows the firmware formula", r4.volume(0).totalBlocks == 7_813_922_816)
@@ -582,6 +590,7 @@ func selfTest() -> Bool {
     check("model registry picks TB3 for firmware 16…", DeviceModel.identify(Capabilities(raw: tb3caps)) == .graidTB3)
     tb3caps.replaceSubrange(8..<10, with: [0x99, 0x00])
     check("unknown firmware is status-only", !DeviceModel.identify(Capabilities(raw: tb3caps)).canChangeMode)
+    check("guard: unknown firmware is refused", controllerProblem(caps: Capabilities(raw: tb3caps)) != nil)
 
     // --- Event diff ---
     func diskStatus(_ ports: [UInt8]) -> DiskStatus {
@@ -960,6 +969,20 @@ func driveSizeText(_ bytes: Double, tenths: Bool = false) -> String {
 func disksMismatched(_ sizes: [Double]) -> Bool {
     guard let lo = sizes.min(), let hi = sizes.max(), lo > 0 else { return false }
     return (hi - lo) / lo > 0.01
+}
+
+/// Why a mode change or rebuild must not be sent to the controller that just answered, or nil.
+/// Checked right before sending, by the CLI and the app alike: the firmware family must be one
+/// whose ModeChange command is known, and, when the caller confirmed a particular enclosure
+/// (`expectedID`), this must still be that one (disk numbers are reused after a reconnect).
+func controllerProblem(caps: Capabilities, expectedID: String? = nil) -> String? {
+    if let expectedID, caps.uniqueID != expectedID {
+        return "This disk now belongs to a different G-RAID (ID \(caps.uniqueID), not \(expectedID)). Nothing was changed; check which G-RAID is selected and try again."
+    }
+    if !DeviceModel.identify(caps).canChangeMode {
+        return "This G-RAID's firmware (\(caps.firmware)) isn't one this utility knows, so it only shows status. Nothing was changed."
+    }
+    return nil
 }
 
 /// The same preconditions the original app enforces. Returns nil when the change is allowed.

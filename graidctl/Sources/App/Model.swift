@@ -384,9 +384,12 @@ final class AppModel: ObservableObject {
         let unitName = self.name(of: unit)
         Task.detached {
             var notice: Notice
+            var opened: Device?
             do {
                 let dev = try Device(path: unit.path)
+                opened = dev
                 let (caps, raid, disks) = try fetchAll(dev)
+                if let problem = controllerProblem(caps: caps, expectedID: unit.id) { throw ToolError(problem) }
                 if let problem = rebuildProblem(caps: caps, raid: raid, disks: disks, source: source) { throw ToolError(problem) }
                 _ = try performModeChange(dev: dev, bsdNames: unit.bsdNames,
                                           payload: rebuildPayload(source: source, name: caps.raidSetName, disks: disks))
@@ -396,9 +399,10 @@ final class AppModel: ObservableObject {
                 await MainActor.run { self.log([event]) }
             } catch {
                 // The controller resets as soon as it accepts the command, so the follow-up read
-                // can fail even though the rebuild started.
+                // can fail even though the rebuild started. Only when the whole command had been
+                // sent: the same error before that (the disk went away) means nothing started.
                 let text = "\(error)"
-                notice = text.contains("Device not configured")
+                notice = opened?.sentOpcode == 0xB0 && text.contains("Device not configured")
                     ? Notice(.done, "Rebuild started", "The G-RAID is resetting. It reconnects in a few seconds, then copies by itself.")
                     : Notice(.problem, "The rebuild wasn't started", text)
             }
@@ -843,7 +847,8 @@ final class AppModel: ObservableObject {
                 let dev = try Device(path: unit.path)
                 let (st, _) = try dev.execute(.identify)
                 guard st == 0x00 || st == 0x20 else { throw ToolError("The G-RAID did not respond (\(ackText(st))).") }
-                let (_, _, disks) = try fetchAll(dev)
+                let (caps, _, disks) = try fetchAll(dev)
+                if let problem = controllerProblem(caps: caps, expectedID: unit.id) { throw ToolError(problem) }
                 if let problem = modeChangeProblem(mode: mode, name: name, disks: disks) { throw ToolError(problem) }
                 let payload = modeChangePayload(mode: mode, name: name, disks: disks)
                 switch try performModeChange(dev: dev, bsdNames: unit.bsdNames, payload: payload) {
