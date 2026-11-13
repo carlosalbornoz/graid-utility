@@ -16,7 +16,7 @@ build_universal() { # name, output, sources...
   lipo -create "$OUT/obj/$name-arm64" "$OUT/obj/$name-x86_64" -output "$out"
 }
 
-build_universal graidctl "$OUT/graidctl" Sources/Core/*.swift Sources/CLI/main.swift
+build_universal graidctl "$OUT/graidctl" Sources/Core/*.swift Sources/CLI/*.swift
 build_universal app "$OUT/obj/app" -parse-as-library Sources/Core/*.swift Sources/App/*.swift
 
 rm -rf "$APP"

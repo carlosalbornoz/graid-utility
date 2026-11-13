@@ -98,35 +98,81 @@ func diffSnapshots(old: [String: UnitSnapshot], new: [String: UnitSnapshot], con
     return out
 }
 
+/// What became of the units that were in the last scan and aren't in this one.
+/// - `ejected`: the user ejected it and its disks are still attached. It keeps its last state.
+/// - `glitch`: its disk is still there but it didn't answer, once. It keeps its last state too.
+/// - `gone`: its disk is gone, or it didn't answer twice in a row.
+/// `diskNames` holds the disks each unit was last seen on; `missCount` is updated in place.
+func resolveMissingUnits(_ missing: [String], diskNames: [String: [String]], ejected: Set<String>, present: Set<String>,
+                         missCount: inout [String: Int]) -> (gone: Set<String>, ejected: Set<String>, glitch: Set<String>) {
+    var gone = Set<String>(), kept = Set<String>(), glitch = Set<String>()
+    for id in missing {
+        let bsds = diskNames[id] ?? []
+        if !bsds.isEmpty, bsds.allSatisfy({ ejected.contains($0) && present.contains($0) }) {
+            kept.insert(id)
+            continue
+        }
+        let diskGone = !bsds.contains(where: present.contains)
+        missCount[id, default: 0] += 1
+        if diskGone || missCount[id, default: 0] >= 2 {
+            gone.insert(id)
+            missCount[id] = nil
+        } else {
+            glitch.insert(id)
+        }
+    }
+    return (gone, kept, glitch)
+}
+
 /// Append-only JSON-lines log in Application Support.
 final class EventLog {
     let url: URL
 
     init(url: URL? = nil) {
+        if let url { self.url = url; return }
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("G-RAID Utility")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        self.url = url ?? dir.appendingPathComponent("events.jsonl")
+        self.url = dir.appendingPathComponent("events.jsonl")
     }
 
     private static let encoder: JSONEncoder = { let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e }()
     private static let decoder: JSONDecoder = { let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d }()
 
-    func append(_ events: [GRAIDEvent]) {
-        guard !events.isEmpty else { return }
+    private static func lines(_ events: [GRAIDEvent]) -> Data {
         var data = Data()
-        for e in events { if let line = try? Self.encoder.encode(e) { data.append(line); data.append(0x0A) } }
-        if let h = try? FileHandle(forWritingTo: url) {
-            h.seekToEndOfFile(); h.write(data); try? h.close()
-        } else {
-            try? data.write(to: url)
+        for e in events { if let line = try? encoder.encode(e) { data.append(line); data.append(0x0A) } }
+        return data
+    }
+
+    /// Returns false when the events couldn't be written (a full disk, a folder that can't be
+    /// written to). Uses the throwing file calls: the older ones raise an exception instead.
+    @discardableResult
+    func append(_ events: [GRAIDEvent]) -> Bool {
+        guard !events.isEmpty else { return true }
+        let data = Self.lines(events)
+        do {
+            if let h = try? FileHandle(forWritingTo: url) {
+                defer { try? h.close() }
+                try h.seekToEnd()
+                try h.write(contentsOf: data)
+            } else {
+                try data.write(to: url)
+            }
+            return true
+        } catch {
+            return false
         }
     }
 
+    /// The newest `limit` events. When the file has grown to more than twice that, it is cut
+    /// back to those events, so it can't grow without end.
     func load(limit: Int = 2000) -> [GRAIDEvent] {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
         let events = text.split(separator: "\n").compactMap { try? Self.decoder.decode(GRAIDEvent.self, from: Data($0.utf8)) }
-        return Array(events.suffix(limit))
+        let newest = Array(events.suffix(limit))
+        if events.count > 2 * limit { try? Self.lines(newest).write(to: url, options: .atomic) }
+        return newest
     }
 
     func clear() { try? FileManager.default.removeItem(at: url) }

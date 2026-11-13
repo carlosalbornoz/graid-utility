@@ -61,6 +61,13 @@ final class ControllerSimulator {
     var raid = ControllerSimulator.capturedRaid
     var disks = ControllerSimulator.capturedDisks
     var staleReads = 0
+    // Faults, for tests of the error paths.
+    /// Statuses to answer the next commands with, instead of running them (0xE0 = CRC error…).
+    var forcedStatuses: [UInt8] = []
+    /// While set, commands are ignored: the result sector keeps the previous reply.
+    var silent = false
+    /// How many reads of the result sector say "in process" (0x10) before the final status.
+    var busyReads = 0
     /// Controller RAM for GetRegister: a made-up pattern, with the RAID 1 bytes set like a
     /// degraded array running on port 0.
     var xdata: [UInt8] = {
@@ -77,6 +84,7 @@ final class ControllerSimulator {
     private var ack: [UInt8]
     private var pendingAck: [UInt8]?
     private var staleLeft = 0
+    private var busyLeft = 0
     private var packet: [UInt32] = []
 
     init() {
@@ -88,7 +96,15 @@ final class ControllerSimulator {
     func read(_ lba: UInt32) -> [UInt8] {
         if lba == ackLBA {
             if staleLeft > 0 { staleLeft -= 1; return ack }
-            if let p = pendingAck { ack = p; pendingAck = nil }
+            if let p = pendingAck {
+                if busyLeft > 0 {
+                    busyLeft -= 1
+                    ack = p
+                    ack[0x30] = 0x10
+                    return ack
+                }
+                ack = p; pendingAck = nil
+            }
             return ack
         }
         if lba != separatorLBA { feed(lba) }
@@ -115,6 +131,7 @@ final class ControllerSimulator {
     }
 
     private func complete(_ bytes: [UInt8], long: Bool) {
+        if silent { return }
         let control = Array(bytes[0..<4]), command = Array(bytes[4..<8])
         let data = long ? Array(bytes[8..<136]) : []
         let crc = Array(bytes.suffix(4))
@@ -124,6 +141,8 @@ final class ControllerSimulator {
         let c = crc32(echo + data)
         if crc != [UInt8(c >> 24), UInt8((c >> 16) & 0xFF), UInt8((c >> 8) & 0xFF), UInt8(c & 0xFF)] {
             status = 0xE0
+        } else if !forcedStatuses.isEmpty {
+            status = forcedStatuses.removeFirst()
         } else {
             executed.append(command[0])
             switch command[0] {
@@ -147,6 +166,7 @@ final class ControllerSimulator {
         if !reply.isEmpty { next.replaceSubrange(0x50..<(0x50 + reply.count), with: reply) }
         pendingAck = next
         staleLeft = staleReads
+        busyLeft = busyReads
     }
 
     private func applyModeChange(_ p: [UInt8]) {

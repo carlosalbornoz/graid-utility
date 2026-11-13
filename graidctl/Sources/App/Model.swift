@@ -273,36 +273,30 @@ final class AppModel: ObservableObject {
         return true
     }
 
-    /// Turn the difference between two scans into events, log them and notify.
-    private func record(scan: (units: [Unit], locked: [String], blocked: [String], usb: [Candidate], present: Set<String>, thunderbolt: [String])) {
+    /// Turn the difference between two scans into events, log them and notify. Returns the units
+    /// that didn't answer this once though their disk is still there: they stay on screen.
+    @discardableResult
+    private func record(scan: (units: [Unit], locked: [String], blocked: [String], usb: [Candidate], present: Set<String>, thunderbolt: [String])) -> Set<String> {
         let names = Self.names(scan.units)
         let now = Dictionary(uniqueKeysWithValues: scan.units.map { ($0.id, $0.snapshot(named: names[$0.id] ?? $0.baseName)) })
         guard let old = lastSnapshots else {   // first scan is the baseline
             lastSnapshots = now
             rememberDiskNames(scan.units, keeping: [])
-            return
+            return []
         }
-        var gone = Set<String>()
+        // The disks each unit was last seen on come from `lastDiskNames`, not `units`: ejecting
+        // removes a unit from there. An ejected unit that is still attached keeps its last state
+        // (no "Disconnected"); so does one that failed to answer once (a glitch).
+        let missing = resolveMissingUnits(old.keys.filter { now[$0] == nil }, diskNames: lastDiskNames,
+                                          ejected: ejectedDisks, present: scan.present, missCount: &missCount)
         var carried = now
-        for (id, snap) in old where now[id] == nil {
-            // The disks it was last seen on. Not looked up in `units`: ejecting removes it from there.
-            let bsds = lastDiskNames[id] ?? []
-            // Ejected on purpose and still attached: keep its last state, no "Disconnected".
-            if !bsds.isEmpty, bsds.allSatisfy({ ejectedDisks.contains($0) && scan.present.contains($0) }) {
-                carried[id] = snap
-                continue
-            }
-            // Confirm a disappearance: its disk is gone, or it failed to answer twice in a row.
-            let diskGone = !bsds.contains(where: scan.present.contains)
-            missCount[id, default: 0] += 1
-            if diskGone || missCount[id]! >= 2 { gone.insert(id) } else { carried[id] = snap }
-        }
+        for id in missing.ejected.union(missing.glitch) { carried[id] = old[id] }
         for id in now.keys { missCount[id] = nil }
-        for id in gone { missCount[id] = nil }
-        let events = diffSnapshots(old: old, new: now, confirmedGone: gone)
+        let events = diffSnapshots(old: old, new: now, confirmedGone: missing.gone)
         lastSnapshots = carried
         rememberDiskNames(scan.units, keeping: Set(carried.keys))
         log(events)
+        return missing.glitch
     }
 
     /// Each unit's disks as last seen, kept for as long as its snapshot is carried forward.
@@ -314,7 +308,7 @@ final class AppModel: ObservableObject {
 
     func log(_ events: [GRAIDEvent]) {
         guard !events.isEmpty else { return }
-        eventLog.append(events)
+        if !eventLog.append(events) { NSLog("G-RAID Utility: couldn't write %d event(s) to %@", events.count, eventLog.url.path) }
         recentEvents.append(contentsOf: events)
         if recentEvents.count > 2000 { recentEvents.removeFirst(recentEvents.count - 2000) }
         Notifier.post(events)
@@ -519,15 +513,18 @@ final class AppModel: ObservableObject {
                 self.countersAfterCheck = result.units.isEmpty ? nil : counters
                 self.idleSince = nil
                 defer { if self.rescanPending { self.rescanPending = false; self.refresh(quiet: true) } }
-                self.record(scan: result)
-                self.units = result.units
+                // A G-RAID that missed one read while its disk is still attached stays on screen
+                // with its last status, instead of vanishing (and closing its sheets) for a moment.
+                let glitched = self.record(scan: result)
+                let shown = result.units + self.units.filter { glitched.contains($0.id) }
+                self.units = shown
                 self.rememberDrives(result.units)
                 self.trackRebuilds(result.units)
                 self.trackActiveMember(result.units)
                 self.lockedDisks = result.locked
                 self.usbGRAIDs = result.usb
-                if self.selectedID == nil || !result.units.contains(where: { $0.id == self.selectedID }) {
-                    self.selectedID = result.units.first?.id
+                if self.selectedID == nil || !shown.contains(where: { $0.id == self.selectedID }) {
+                    self.selectedID = shown.first?.id
                 }
                 self.thunderboltGRAIDs = result.thunderbolt
                 // Forget ejected disks once they're unplugged, or once something (Finder, Disk
@@ -539,7 +536,7 @@ final class AppModel: ObservableObject {
                 // Without Full Disk Access the disk reads fail even once the password is given,
                 // so ask for that first.
                 let noFullDiskAccess = !result.blocked.isEmpty || (!result.locked.isEmpty && !SetupState.hasFullDiskAccess())
-                if !result.units.isEmpty { self.phase = .ready }
+                if !shown.isEmpty { self.phase = .ready }
                 else if noFullDiskAccess { self.phase = .needsFullDiskAccess }
                 else if !result.locked.isEmpty { self.phase = .needsAccess }
                 else if !self.ejectedDisks.isEmpty || self.mounting { self.phase = .ejected }
@@ -561,7 +558,7 @@ final class AppModel: ObservableObject {
                 } else {
                     self.lockedSince = nil
                 }
-                self.menuHealth = result.units.map(\.health).max { $0.rank < $1.rank }
+                self.menuHealth = shown.map(\.health).max { $0.rank < $1.rank }
                 self.lastUpdated = Date()
                 self.finishUserRefresh()
             }
@@ -586,7 +583,12 @@ final class AppModel: ObservableObject {
                 if "\(error)".contains("Full Disk Access") { blocked.append(c.bsdName) }
                 continue
             }
-            guard st == 0x00 || st == 0x20, let (caps, raid, disks) = try? fetchAll(dev) else { continue }
+            guard st == 0x00 || st == 0x20 else { continue }
+            // One more try before giving up on this pass: a single failed read is usually a
+            // controller that was busy for a moment.
+            var status = try? fetchAll(dev)
+            if status == nil { usleep(300_000); status = try? fetchAll(dev) }
+            guard let (caps, raid, disks) = status else { continue }
             saveDiagnostics(bsd: c.bsdName, caps: caps, raid: raid, disks: disks, acks: dev.lastAcks)
             if let existing = units[caps.uniqueID] {
                 var merged = Unit(path: existing.path, bsdNames: existing.bsdNames + [c.bsdName],

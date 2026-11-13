@@ -90,8 +90,8 @@ RaidSetName[15] @49, UniqueID[8] @64 (the app shows it as a little-endian u64 in
 RAID 0 volume; the rest was left over from earlier replies) Mode @0, Disks @1, Volumes @2, VHDD_Reason @3, then
 4 × Volume (40 bytes): Status @0, Mode @1, StripeSize @2, BytesPerBlock u16 @6,
 TotalBlocks u64 @8, StartLBA @16, EndLBA @24, TagLBA @32 (rebuild position in the generic
-ASMedia layout; this firmware never fills it. The position can probably be read from controller
-memory with GetRegister instead, see FIRMWARE.md "Rebuild").
+ASMedia layout; this firmware never fills it. The position is read from controller memory with
+GetRegister instead, confirmed on hardware 2026-11-08, see FIRMWARE.md "Rebuild").
 
 **Disk status (384 bytes):** Mode @0, Ports @1, Disks @2, then 5 × Port (76 bytes):
 Status @0, Order @1, ModelNumber[40] @4 and SerialNumber[20] @44 (ATA strings, so each

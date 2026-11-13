@@ -24,7 +24,7 @@ func pickDevice(_ explicit: String?, anyProtocol: Bool, verbose: Bool) throws ->
         return (dev, nil)
     }
     if let e = explicit {
-        let path = e.hasPrefix("/") ? e : "/dev/r" + e.replacingOccurrences(of: "/dev/", with: "").replacingOccurrences(of: "rdisk", with: "disk")
+        let path = devicePath(e)
         let dev = try Device(path: path)
         dev.verbose = verbose
         let (st, _) = try dev.execute(.identify)
@@ -118,8 +118,12 @@ func cmdSetMode(device: String?, mode: TargetMode, name: String, confirmed: Bool
     guard readLine() == "ERASE" else { print("Cancelled."); return }
 
     // Individual mode exposes one disk per bay, all on the same controller.
-    var bsd = [cand?.bsdName ?? dev.path.replacingOccurrences(of: "/dev/r", with: "")]
-    bsd += discover(anyProtocol: anyProtocol, verbose: false).filter { $0.caps?.uniqueID == caps.uniqueID }.map { $0.candidate.bsdName }
+    // The simulator has no disks to unmount, and a simulated run must not probe the real ones.
+    var bsd: [String] = []
+    if !simulate {
+        bsd = [cand?.bsdName ?? bsdName(dev.path)]
+        bsd += discover(anyProtocol: anyProtocol, verbose: false).filter { $0.caps?.uniqueID == caps.uniqueID }.map { $0.candidate.bsdName }
+    }
 
     switch try performModeChange(dev: dev, bsdNames: bsd, payload: modeChangePayload(mode: mode, name: name, disks: disks)) {
     case .accepted:
@@ -155,7 +159,7 @@ func cmdRebuild(device: String?, sourceBay: Int?, confirmed: Bool, anyProtocol: 
     print("Type REBUILD to continue: ", terminator: "")
     guard readLine() == "REBUILD" else { print("Cancelled."); return }
 
-    let bsd = [cand?.bsdName ?? dev.path.replacingOccurrences(of: "/dev/r", with: "")]
+    let bsd = simulate ? [] : [cand?.bsdName ?? bsdName(dev.path)]
     switch try performModeChange(dev: dev, bsdNames: bsd, payload: rebuildPayload(source: source, name: caps.raidSetName, disks: disks)) {
     case .accepted:
         print("Rebuild accepted. Check progress with `sudo graidctl status` or in G-RAID Utility.")
@@ -384,71 +388,46 @@ OPTIONS
   --any-protocol     Also probe external non-SATA disks
 """
 
-var args = Array(CommandLine.arguments.dropFirst())
-func flag(_ names: String...) -> Bool {
-    if let i = args.firstIndex(where: { names.contains($0) }) { args.remove(at: i); return true }
-    return false
-}
-func option(_ name: String) -> String? {
-    guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
-    let v = args[i + 1]; args.removeSubrange(i...(i + 1)); return v
-}
-
-let verbose = flag("-v", "--verbose")
-let json = flag("--json")
-let anyProto = flag("--any-protocol")
-simulate = flag("--simulate")
-let confirmed = flag("--yes-erase-all-data")
-let overwriteConfirmed = flag("--yes-overwrite-other-bay")
-let fromBay = option("--from").flatMap { Int($0) }
-let watchInterval = option("--interval").flatMap { Double($0) } ?? 5
-let watchCount = option("--count").flatMap { Int($0) }
-let watchPorts = flag("--ports")
-let setName = option("--name") ?? "G-RAID"
-
 do {
-    guard let sub = args.first else { print(usage); exit(0) }
-    let rest = Array(args.dropFirst())
+    let a = try Arguments(Array(CommandLine.arguments.dropFirst()))
+    simulate = a.simulate
+    guard let sub = a.command else { print(usage); exit(0) }
+    let rest = a.rest
     switch sub {
-    case "list": try cmdList(anyProtocol: anyProto, verbose: verbose)
-    case "status": try cmdStatus(device: rest.first, anyProtocol: anyProto, verbose: verbose, json: json)
+    case "list": try cmdList(anyProtocol: a.anyProtocol, verbose: a.verbose)
+    case "status": try cmdStatus(device: rest.first, anyProtocol: a.anyProtocol, verbose: a.verbose, json: a.json)
     case "set-mode":
         let modes: [String: TargetMode] = ["individual": .individual, "raid0": .raid0, "raid1": .raid1]
         guard let m = rest.first.flatMap({ modes[$0.lowercased()] }) else { throw ToolError("set-mode needs one of: individual, raid0, raid1") }
-        try cmdSetMode(device: rest.dropFirst().first, mode: m, name: setName, confirmed: confirmed, anyProtocol: anyProto, verbose: verbose)
+        try cmdSetMode(device: rest.dropFirst().first, mode: m, name: a.name, confirmed: a.eraseConfirmed, anyProtocol: a.anyProtocol, verbose: a.verbose)
     case "watch-ram":
-        try cmdWatchRAM(device: rest.first, interval: max(1, watchInterval), count: watchCount, dumpPorts: watchPorts, anyProtocol: anyProto, verbose: verbose)
+        try cmdWatchRAM(device: rest.first, interval: max(1, a.interval), count: a.count, dumpPorts: a.ports, anyProtocol: a.anyProtocol, verbose: a.verbose)
     case "rebuild":
-        try cmdRebuild(device: rest.first, sourceBay: fromBay, confirmed: overwriteConfirmed, anyProtocol: anyProto, verbose: verbose)
-    case "grant-access": try cmdGrantAccess(uidString: option("--uid"), anyProtocol: anyProto)
-    case "unlock-daemon": try cmdUnlockDaemon(uidString: option("--uid"))
+        try cmdRebuild(device: rest.first, sourceBay: a.from, confirmed: a.overwriteConfirmed, anyProtocol: a.anyProtocol, verbose: a.verbose)
+    case "grant-access": try cmdGrantAccess(uidString: a.uid, anyProtocol: a.anyProtocol)
+    case "unlock-daemon": try cmdUnlockDaemon(uidString: a.uid)
     case "partitions":
         guard let d = rest.first else { throw ToolError("partitions needs a whole disk, e.g. graidctl partitions disk4") }
-        let parts = partitions(onWholeDisk: d.replacingOccurrences(of: "/dev/", with: ""))
+        let parts = partitions(onWholeDisk: bsdName(d))
         if parts.isEmpty { print("No partitions found on \(d).") }
         for p in parts {
             let where_ = p.mountURL.map { "mounted at \($0.path)" } ?? (p.mountable ? "not mounted" : "can't be mounted")
             print("\(p.bsd.padding(toLength: 10, withPad: " ", startingAt: 0)) \(p.kind.rawValue.padding(toLength: 10, withPad: " ", startingAt: 0)) \(formatBytes(p.size).padding(toLength: 10, withPad: " ", startingAt: 0)) \(p.format) · \(p.name) · \(where_)\(p.isAPFS ? " · in APFS container \(p.parentDisk)" : "")")
         }
     case "io-counters":
-        guard let d = rest.first, let c = ioCounters(bsd: d.replacingOccurrences(of: "/dev/", with: "")) else {
+        guard let d = rest.first, let c = ioCounters(bsd: bsdName(d)) else {
             throw ToolError("io-counters needs a whole disk that exists, e.g. graidctl io-counters disk4")
         }
         print("reads \(c.reads)  writes \(c.writes)")
     case "spin-check":
         // Measure before anything else touches the disk (even Identify could wake the drives).
         try requireRoot()
-        guard let d = rest.first else { throw ToolError("spin-check needs a disk, e.g. graidctl spin-check disk4") }
-        let name = d.replacingOccurrences(of: "/dev/", with: "").replacingOccurrences(of: "rdisk", with: "disk")
-        print(describeSpinState(try measureReadLatency(path: "/dev/r" + name)))
+        guard let d = rest.first, isDiskArgument(d) else { throw ToolError("spin-check needs a disk, e.g. graidctl spin-check disk4") }
+        print(describeSpinState(try measureReadLatency(path: devicePath(d))))
     case "firmware-dump":
-        let sizeArg = option("--size")
-        let size = sizeArg.map { UInt32($0.hasPrefix("0x") ? String($0.dropFirst(2)) : $0, radix: $0.hasPrefix("0x") ? 16 : 10) } ?? firmwareDumpDefaultSize
-        guard let sz = size else { throw ToolError("--size must be a number, e.g. 0x1F000") }
-        let rest2 = Array(args.dropFirst())
-        let file = rest2.first(where: { !$0.hasPrefix("disk") && !$0.hasPrefix("/dev/") })
-        let disk = rest2.first(where: { $0.hasPrefix("disk") || $0.hasPrefix("/dev/") })
-        try cmdFirmwareDump(file: file, device: disk, size: sz, anyProtocol: anyProto, verbose: verbose)
+        // The disk is the argument that is a disk name; the other one, if any, is the file.
+        try cmdFirmwareDump(file: rest.first(where: { !isDiskArgument($0) }), device: rest.first(where: isDiskArgument),
+                            size: a.size ?? firmwareDumpDefaultSize, anyProtocol: a.anyProtocol, verbose: a.verbose)
     case "trace": cmdTrace()
     case "selftest": exit(selfTest() ? 0 : 1)
     case "-h", "--help", "help": print(usage)

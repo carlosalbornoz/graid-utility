@@ -9,7 +9,13 @@ import SwiftUI
 enum DiskOps {
     private final class Op {
         let session = DASessionCreate(kCFAllocatorDefault)!
-        var done: ((DADissenter?) -> Void)?
+        /// Called once with nil on success or why it failed. Main thread only.
+        var done: ((String?) -> Void)?
+        func finish(_ result: String?) {
+            let d = done
+            done = nil
+            d?(result)
+        }
         init() { DASessionScheduleWithRunLoop(session, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue) }
         deinit { DASessionUnscheduleFromRunLoop(session, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue) }
     }
@@ -42,18 +48,28 @@ enum DiskOps {
                          prompt: "G-RAID Utility needs an administrator password to \(verb) the \(name) partition.")
     }
 
+    /// How long to wait for macOS to answer a mount, unmount or eject. Generous: a mount can
+    /// include a file system check, and an unmount waits for apps to let go.
+    static let timeLimit: TimeInterval = 120
+    static let timedOutText = "macOS didn't answer in time"
+
+    @MainActor
     private static func run(_ bsd: String, _ start: (DADisk, UnsafeMutableRawPointer) -> Void) async -> String? {
         let op = Op()
         guard let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, op.session, bsd) else { return "\(bsd) is no longer connected." }
         return await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
-            op.done = { d in c.resume(returning: d.map(describe)) }
+            op.done = { c.resume(returning: $0) }
             start(disk, Unmanaged.passRetained(op).toOpaque())
+            // If the answer never comes (the disk arbitration service restarted, say), stop
+            // waiting rather than leave the app "working" until it's reopened. The request holds
+            // the operation until its callback runs; once that has happened this does nothing.
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeLimit) { [weak op] in op?.finish(timedOutText) }
         }
     }
 
     private static let callback: DADiskUnmountCallback = { _, dissenter, ctx in
         let op = Unmanaged<Op>.fromOpaque(ctx!).takeRetainedValue()
-        op.done?(dissenter)
+        op.finish(dissenter.map(describe))
     }
 
     /// Unmount every volume on the whole disk. Returns nil on success, or why it failed.

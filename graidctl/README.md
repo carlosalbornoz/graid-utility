@@ -16,8 +16,8 @@ the same way the original app does: by reading specific sectors in a specific or
 
 ```sh
 ./build.sh                  # → build/G-RAID Utility.app and build/graidctl (both universal)
-build/graidctl selftest     # protocol encoding/parsing checks
-tests/fake_device.sh        # end-to-end run against a fake controller image
+build/graidctl selftest     # checks of the protocol, the logic on top of it, the command line and the event log
+tests/fake_device.sh        # end-to-end: the built graidctl against a fake image and the simulator
 tests/render_previews.sh    # renders the app's screens with sample data → build/previews/
 ```
 
@@ -109,7 +109,12 @@ system symbols. The enclosure picture and app icon are G-Technology's, added loc
   (`/Library/PrivilegedHelperTools/local.graid.unlockd`, launchd label
   `local.graid.unlockd`) with one password prompt. When a disk appears it unlocks G-RAID
   disks only, read-only, for your account. It needs Full Disk Access once; Settings shows
-  its state and the steps. Switching it off removes it.
+  its state and the steps. Switching it off removes it. A disk that doesn't answer as a
+  G-RAID after four tries is left alone until it's reconnected.
+
+  Unlocked means readable as a raw disk: until the G-RAID is disconnected, any program
+  running as you that has Full Disk Access can read everything on it, whatever the
+  permissions on its files. That applies to the password prompt and the service alike.
 - **Event history** (Window → Event History, ⌘Y): connects, disconnects, mode changes,
   and array and disk state changes, stored in
   `~/Library/Application Support/G-RAID Utility/events.jsonl`, exportable as CSV.
@@ -143,11 +148,13 @@ sudo graidctl firmware-dump        # read-only backup of the controller firmware
 |------|------|
 | `Sources/Core/GRAIDCore.swift` | Protocol, parsing, discovery, mode change (shared) |
 | `Sources/Core/Simulator.swift` | Model registry and the controller simulator (replies captured from a real unit) |
-| `Sources/Core/Events.swift` | Snapshot diff, event log |
-| `Sources/CLI/main.swift` | `graidctl` |
+| `Sources/Core/Events.swift` | Snapshot diff, units missing from a scan, event log |
+| `Sources/CLI/main.swift` | `graidctl` commands |
+| `Sources/CLI/Arguments.swift` | `graidctl` command-line parsing |
+| `Sources/CLI/SelfTest.swift` | `graidctl selftest` (not part of the app binary) |
 | `Sources/App/` | SwiftUI app: `AppMain.swift` (scenes), `Model.swift`, `GRAIDApp.swift` (main window), `MonitorViews.swift` (Settings, menu bar, history), `Services.swift` (unlock service, login item, notifications), `ReplaceDrive.swift` (Replace a Drive guide) |
 | `Resources/` | Icon and images copied from the original Configurator |
-| `tests/` | Fake-device test and the preview renderer (`tests/preview/RenderPreviews.swift`: sample units for every drive state) |
+| `tests/` | End-to-end test (fake image and simulator) and the preview renderer (`tests/preview/RenderPreviews.swift`: sample units for every drive state) |
 | `PROTOCOL.md`, `FIRMWARE.md` | Host protocol; controller firmware findings (from the dump in `../firmware/`) |
 
 The views use `@StateObject` instead of `@State`, because the Command Line Tools ship
